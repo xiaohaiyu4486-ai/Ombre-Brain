@@ -1,0 +1,43 @@
+transport: "streamable-http"
+
+log_level: "INFO"
+
+merge_threshold: 75
+
+dehydration:
+  model: "Qwen/Qwen2.5-7B-Instruct"
+  base_url: "https://api.siliconflow.cn/v1"
+  max_tokens: 1024
+  temperature: 0.1
+
+decay:
+  lambda: 0.05
+  threshold: 0.3
+  check_interval_hours: 24
+  emotion_weights:
+    base: 1.0
+    arousal_boost: 0.8
+
+embedding:
+  enabled: true
+  model: "BAAI/bge-m3"
+  base_url: "https://api.siliconflow.cn/v1"
+
+scoring_weights:
+  topic_relevance: 4.0
+  emotion_resonance: 2.0
+  time_proximity: 1.5
+  importance: 1.0
+
+matching:
+  fuzzy_threshold: 50
+  max_results: 5
+
+wikilink:
+  enabled: true
+  use_tags: false
+  use_domain: true
+  use_auto_keywords: true
+  auto_top_k: 4
+  min_keyword_len: 3
+  exclude_keywords: []

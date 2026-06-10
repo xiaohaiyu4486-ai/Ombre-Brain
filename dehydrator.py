@@ -253,26 +253,9 @@ class Dehydrator:
         if not content or not content.strip():
             return "（空记忆 / empty memory）"
 
-        # --- Content is short enough, no compression needed ---
-        # --- 内容已经很短，不需要压缩 ---
-        if count_tokens_approx(content) < 100:
-            return self._format_output(content, metadata)
-
-        # --- Check cache first ---
-        # --- 先查缓存 ---
-        cached = self._get_cached_summary(content)
-        if cached:
-            return self._format_output(cached, metadata)
-
-        # --- API dehydration (no local fallback) ---
-        # --- API 脱水（无本地降级）---
-        if not self.api_available:
-            raise RuntimeError("脱水 API 不可用，请配置 OMBRE_API_KEY")
-
-        result = await self._api_dehydrate(content)
-        # --- Cache the result ---
-        self._set_cached_summary(content, result)
-        return self._format_output(result, metadata)
+        # --- Dehydration disabled: 7B 在中文长文上复读失控，且垃圾被永久缓存 ---
+        # --- 直接返回原文，原文在磁盘上是完好的 ---
+        return self._format_output(content, metadata)
 
     # ---------------------------------------------------------
     # Merge: blend new content into existing bucket

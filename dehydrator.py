@@ -497,21 +497,14 @@ class Dehydrator:
         if not content or not content.strip():
             return []
 
-        # --- API digest (no local fallback) ---
-        if not self.api_available:
-            raise RuntimeError("脱水 API 不可用，请检查 config.yaml 中的 dehydration 配置")
-        try:
-            result = await self._api_digest(content)
-        except Exception as e:
-            logger.warning(f"API digest failed, will store raw / 整理API异常，转直存原文: {e}")
-            result = []
-        if result:
-            return result
-        # --- Never refuse a memory: fall back to storing the raw content ---
-        # --- 永不拒收记忆：整理失败就把原文原样存成一条（2026-07-05 附录A修法②） ---
-        logger.warning("Diary digest empty, falling back to raw storage / 整理返回空，直存原文")
+        # --- Splitting disabled (2026-07-05, 附录A方案A) ---
+        # --- 拆分已停用：7B 对中文长文复读失控（见 a8a3fbf 对 dehydrate 的同款处理），
+        #     且自动拆分/自动打标签本就违背"情感坐标按单个事件自己标"的设计（小乖 2026-06-24）。
+        #     grow 长文=整条原文存一桶、瞬间返回、不调任何 API；元数据留默认，由窗口用 trace 补全。
+        #     切回智能拆分只需换 config 里的 model 为 DeepSeek 等强模型，_api_digest 逻辑仍在下方保留。---
+        c = content.strip()
         return [{
-            "name": content.strip()[:20],
+            "name": c[:20],
             "content": content,
             "domain": ["未分类"],
             "valence": 0.5,

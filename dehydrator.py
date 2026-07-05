@@ -502,13 +502,23 @@ class Dehydrator:
             raise RuntimeError("脱水 API 不可用，请检查 config.yaml 中的 dehydration 配置")
         try:
             result = await self._api_digest(content)
-            if result:
-                return result
-            raise RuntimeError("API 日记整理返回空结果")
-        except RuntimeError:
-            raise
         except Exception as e:
-            raise RuntimeError(f"API 日记整理失败，请检查 API 连接: {e}") from e
+            logger.warning(f"API digest failed, will store raw / 整理API异常，转直存原文: {e}")
+            result = []
+        if result:
+            return result
+        # --- Never refuse a memory: fall back to storing the raw content ---
+        # --- 永不拒收记忆：整理失败就把原文原样存成一条（2026-07-05 附录A修法②） ---
+        logger.warning("Diary digest empty, falling back to raw storage / 整理返回空，直存原文")
+        return [{
+            "name": content.strip()[:20],
+            "content": content,
+            "domain": ["未分类"],
+            "valence": 0.5,
+            "arousal": 0.3,
+            "tags": [],
+            "importance": 5,
+        }]
 
     # ---------------------------------------------------------
     # API call: diary digest
@@ -530,7 +540,12 @@ class Dehydrator:
         )
         if not response.choices:
             return []
-        raw = response.choices[0].message.content or ""
+        msg = response.choices[0].message
+        raw = msg.content or ""
+        if not raw.strip():
+            # Thinking models put the answer in reasoning_content and leave content empty
+            # 思考型模型会把答案放进 reasoning_content，content 留空（2026-07-05 附录A修法②）
+            raw = getattr(msg, "reasoning_content", None) or ""
         if not raw.strip():
             return []
         return self._parse_digest(raw)
@@ -548,7 +563,15 @@ class Dehydrator:
             cleaned = raw.strip()
             if cleaned.startswith("```"):
                 cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
-            items = json.loads(cleaned)
+            try:
+                items = json.loads(cleaned)
+            except (json.JSONDecodeError, ValueError):
+                # Reasoning text may wrap the JSON array — extract the outermost [...]
+                # 思考文字可能包着JSON数组——抠最外层的 [...]（2026-07-05）
+                start, end = cleaned.find("["), cleaned.rfind("]")
+                if start == -1 or end <= start:
+                    raise
+                items = json.loads(cleaned[start:end + 1])
         except (json.JSONDecodeError, IndexError, ValueError):
             logger.warning(f"Diary digest JSON parse failed / JSON 解析失败: {raw[:200]}")
             return []

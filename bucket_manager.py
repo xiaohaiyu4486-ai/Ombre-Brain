@@ -29,7 +29,7 @@ import os
 import math
 import logging
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -373,6 +373,59 @@ class BucketManager:
         except Exception as e:
             logger.warning(f"Failed to touch bucket / 触碰桶失败: {bucket_id}: {e}")
 
+    # ---------------------------------------------------------
+    # Surfacing bookkeeping: 用进废退 + 检索冷却
+    # Mark a bucket as surfaced (auto-push shown to Claude).
+    # Unlike touch(), does NOT reset last_active (decay timer),
+    # only strengthens slightly and records surfacing time.
+    # 与 touch() 不同：不重置衰减计时，只轻微加固 + 记录浮现时间。
+    # ---------------------------------------------------------
+    async def mark_surfaced(self, bucket_id: str) -> None:
+        """
+        Record that a bucket was surfaced: surface_count++,
+        last_surfaced=now, activation_count +0.2 (use-it-or-lose-it boost).
+        记录桶被浮现：surface_count+1，last_surfaced=now，
+        activation_count +0.2（用进废退的轻微加固）。
+        """
+        file_path = self._find_bucket_file(bucket_id)
+        if not file_path:
+            return
+        try:
+            post = frontmatter.load(file_path)
+            post["surface_count"] = int(post.get("surface_count", 0)) + 1
+            post["last_surfaced"] = now_iso()
+            post["activation_count"] = round(float(post.get("activation_count", 0)) + 0.2, 1)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter.dumps(post))
+        except Exception as e:
+            logger.warning(f"Failed to mark surfaced / 标记浮现失败: {bucket_id}: {e}")
+
+    @staticmethod
+    def surfacing_cooldown_active(meta: dict) -> bool:
+        """
+        Whether a bucket is still cooling down from its last surfacing.
+        Cooldown: base 30min, +30min per 5 surfaces, capped at 3h.
+        Pinned/protected buckets never cool down.
+        浮现冷却：基础30分钟，每浮现5次冷却+30分钟，上限3小时。
+        钉选/保护桶不冷却。
+        """
+        if meta.get("pinned") or meta.get("protected"):
+            return False
+        last_surfaced_str = meta.get("last_surfaced", "")
+        if not last_surfaced_str:
+            return False
+        try:
+            last_surfaced = datetime.fromisoformat(str(last_surfaced_str))
+        except (ValueError, TypeError):
+            return False
+        surface_count = 0
+        try:
+            surface_count = int(meta.get("surface_count", 0))
+        except (ValueError, TypeError):
+            pass
+        cooldown_minutes = min(30 + 30 * (surface_count // 5), 180)
+        return datetime.now() - last_surfaced < timedelta(minutes=cooldown_minutes)
+
     async def _time_ripple(self, source_id: str, reference_time: datetime, hours: float = 48.0) -> None:
         """
         Slightly boost activation_count of buckets created/activated near the reference time.
@@ -493,43 +546,12 @@ class BucketManager:
         # --- 第二层：多维加权精排 ---
         scored = []
         for bucket in candidates:
-            meta = bucket.get("metadata", {})
-
             try:
-                # Dim 1: topic relevance (fuzzy text, 0~1)
-                topic_score = self._calc_topic_score(query, bucket)
-
-                # Dim 2: emotion resonance (coordinate distance, 0~1)
-                emotion_score = self._calc_emotion_score(
-                    query_valence, query_arousal, meta
+                normalized = self.score_for_query(
+                    query, bucket, query_valence, query_arousal
                 )
-
-                # Dim 3: time proximity (exponential decay, 0~1)
-                time_score = self._calc_time_score(meta)
-
-                # Dim 4: importance (direct normalization)
-                importance_score = max(1, min(10, int(meta.get("importance", 5)))) / 10.0
-
-                # --- Weighted sum / 加权求和 ---
-                total = (
-                    topic_score * self.w_topic
-                    + emotion_score * self.w_emotion
-                    + time_score * self.w_time
-                    + importance_score * self.w_importance
-                )
-                # Normalize to 0~100 for readability
-                weight_sum = self.w_topic + self.w_emotion + self.w_time + self.w_importance
-                normalized = (total / weight_sum) * 100 if weight_sum > 0 else 0
-
-                # Threshold check uses raw (pre-penalty) score so resolved buckets
-                # 阈值用原始分数判定，确保 resolved 桶在关键词命中时仍可被搜出
-                # remain reachable by keyword (penalty applied only to ranking).
-                if normalized >= self.fuzzy_threshold:
-                    # Resolved buckets get ranking penalty (but still reachable by keyword)
-                    # 已解决的桶仅在排序时降权
-                    if meta.get("resolved", False):
-                        normalized *= 0.3
-                    bucket["score"] = round(normalized, 2)
+                if normalized is not None:
+                    bucket["score"] = normalized
                     scored.append(bucket)
             except Exception as e:
                 logger.warning(
@@ -540,6 +562,122 @@ class BucketManager:
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
+
+    # ---------------------------------------------------------
+    # Unified query scoring — shared by fuzzy search and the
+    # vector channel (server.py) so both live in ONE candidate pool.
+    # 统一评分：模糊检索与向量通道共用，保证两路命中在同一候选池排序。
+    # topic_override: cosine similarity for vector-only matches
+    #                 (replaces fuzzy topic score when higher).
+    # ---------------------------------------------------------
+    def score_for_query(
+        self,
+        query: str,
+        bucket: dict,
+        query_valence: float = None,
+        query_arousal: float = None,
+        topic_override: float = None,
+        enforce_threshold: bool = True,
+    ) -> Optional[float]:
+        """
+        Score a bucket against a query on the unified 0~100 scale.
+        Returns None if below the relevance threshold (unless
+        enforce_threshold=False — used by the vector channel, which
+        has its own cosine-similarity admission gate).
+        按统一 0~100 分制给桶打分，低于阈值返回 None。
+        enforce_threshold=False 时跳过阈值（向量通道已有余弦相似度门槛）。
+        """
+        meta = bucket.get("metadata", {})
+
+        # Dim 1: topic relevance (fuzzy text, 0~1; vector sim can override)
+        topic_score = self._calc_topic_score(query, bucket)
+        if topic_override is not None:
+            topic_score = max(topic_score, max(0.0, min(1.0, float(topic_override))))
+
+        # Dim 2: emotion resonance (coordinate distance, 0~1)
+        emotion_score = self._calc_emotion_score(query_valence, query_arousal, meta)
+
+        # Dim 3: time proximity (exponential decay, 0~1)
+        time_score = self._calc_time_score(meta)
+
+        # Dim 4: importance (direct normalization)
+        importance_score = max(1, min(10, int(meta.get("importance", 5)))) / 10.0
+
+        total = (
+            topic_score * self.w_topic
+            + emotion_score * self.w_emotion
+            + time_score * self.w_time
+            + importance_score * self.w_importance
+        )
+        weight_sum = self.w_topic + self.w_emotion + self.w_time + self.w_importance
+        normalized = (total / weight_sum) * 100 if weight_sum > 0 else 0
+
+        # Threshold check uses raw (pre-penalty) score so resolved buckets
+        # 阈值用原始分数判定，确保 resolved 桶在关键词命中时仍可被搜出
+        # remain reachable by keyword (penalty applied only to ranking).
+        if enforce_threshold and normalized < self.fuzzy_threshold:
+            return None
+
+        # Resolved buckets get ranking penalty (but still reachable by keyword)
+        # 已解决的桶仅在排序时降权
+        if meta.get("resolved", False):
+            normalized *= 0.3
+
+        # Emotion-temperature gate: hot memories (high arousal) need a
+        # stronger signal to surface in a calm/neutral query context.
+        # 情绪温度门控：高唤醒记忆在平静语境下需要更强信号才浮现（排序降权）。
+        try:
+            b_arousal = float(meta.get("arousal", 0.3))
+        except (ValueError, TypeError):
+            b_arousal = 0.3
+        if b_arousal >= 0.75 and (query_arousal is None or query_arousal < 0.5):
+            normalized *= 0.75
+
+        return round(normalized, 2)
+
+    # ---------------------------------------------------------
+    # Near-duplicate merge: within the same result set, drop
+    # lower-scored entries that are near-identical to a kept one
+    # AND were created in the same time window.
+    # 近重合并：同一时段内容太像的只留分高的一条，腾名额给别的记忆。
+    # ---------------------------------------------------------
+    @staticmethod
+    def dedupe_near_duplicates(
+        buckets: list[dict],
+        window_hours: float = 1.0,
+        similarity_threshold: int = 85,
+    ) -> list[dict]:
+        """
+        Assumes input sorted by score desc; keeps first (highest) of each
+        near-duplicate cluster. 输入需按分数降序；每簇近重只保留最高分。
+        """
+        kept: list[dict] = []
+        for bucket in buckets:
+            meta = bucket.get("metadata", {})
+            created_str = str(meta.get("created", ""))
+            try:
+                created = datetime.fromisoformat(created_str)
+            except (ValueError, TypeError):
+                created = None
+            is_dup = False
+            for other in kept:
+                if created is not None:
+                    o_meta = other.get("metadata", {})
+                    try:
+                        o_created = datetime.fromisoformat(str(o_meta.get("created", "")))
+                        if abs((created - o_created).total_seconds()) > window_hours * 3600:
+                            continue
+                    except (ValueError, TypeError):
+                        pass  # unparseable neighbor time → still compare content
+                ratio = fuzz.ratio(
+                    bucket.get("content", "")[:300], other.get("content", "")[:300]
+                )
+                if ratio >= similarity_threshold:
+                    is_dup = True
+                    break
+            if not is_dup:
+                kept.append(bucket)
+        return kept
 
     # ---------------------------------------------------------
     # Topic relevance sub-score:

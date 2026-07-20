@@ -332,7 +332,8 @@ async def breath_hook(request):
                       if not b["metadata"].get("resolved", False)
                       and b["metadata"].get("type") not in ("permanent", "feel")
                       and not b["metadata"].get("pinned")
-                      and not b["metadata"].get("protected")]
+                      and not b["metadata"].get("protected")
+                      and not bucket_mgr.surfacing_cooldown_active(b["metadata"])]
         scored = sorted(unresolved, key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
 
         parts = []
@@ -360,6 +361,7 @@ async def breath_hook(request):
             if summary_tokens > token_budget:
                 break
             parts.append(summary)
+            await bucket_mgr.mark_surfaced(b["id"])
             token_budget -= summary_tokens
 
         if not parts:
@@ -418,6 +420,29 @@ async def dream_hook(request):
 # Shared by hold and grow to avoid duplicate logic
 # hold 和 grow 共用，避免重复逻辑
 # =============================================================
+async def _autofill_domain(content: str, domain: list, tags: list) -> list:
+    """
+    Deterministic domain fallback when LLM tagging yields 未分类.
+    ① Match content against the existing domain vocabulary (folder names);
+    ② else promote the first tag to domain; ③ else keep 未分类.
+    domain 自动填兜底：LLM 打标失败/返回未分类时，
+    ①用已有 domain 词表做内容匹配 ②否则用首个 tag 顶上 ③再不行保持未分类。
+    """
+    if domain and domain != ["未分类"]:
+        return domain
+    try:
+        stats = await bucket_mgr.get_stats()
+        vocab = [d for d in stats.get("domains", {}) if d not in ("未分类", "沉淀物")]
+        hits = [d for d in vocab if d and (d in content or d in tags)]
+        if hits:
+            return hits[:2]
+    except Exception as e:
+        logger.warning(f"Domain autofill vocab lookup failed / 域词表匹配失败: {e}")
+    if tags:
+        return [tags[0]]
+    return domain or ["未分类"]
+
+
 async def _merge_or_create(
     content: str,
     tags: list,
@@ -433,6 +458,7 @@ async def _merge_or_create(
     检查是否有相似桶可合并，有则合并，无则新建。
     返回 (桶ID或名称, 是否合并)。
     """
+    domain = await _autofill_domain(content, domain, tags)
     try:
         existing = await bucket_mgr.search(content, limit=1, domain_filter=domain or None)
     except Exception as e:
@@ -486,6 +512,34 @@ async def _merge_or_create(
 
 
 # =============================================================
+# Helper: bucket → structured item dict (for structured=True output)
+# 辅助：桶 → 结构化 item 字典（structured=True 输出用）
+# Each item is self-contained so a downstream gateway can inject
+# them one by one instead of truncating one big text blob.
+# 每条 item 自包含，下游网关可逐条注入而不是整段裁切。
+# =============================================================
+def _bucket_to_item(bucket: dict, full: bool = False, score: float = None, surface_type: str = None) -> dict:
+    meta = bucket.get("metadata", {})
+    item = {
+        "bucket_id": bucket["id"],
+        "name": meta.get("name", bucket["id"]),
+        "created": str(meta.get("created", ""))[:19],
+        "domain": meta.get("domain", []),
+        "valence": meta.get("valence", 0.5),
+        "arousal": meta.get("arousal", 0.3),
+        "importance": meta.get("importance", 5),
+        "resolved": bool(meta.get("resolved", False)),
+        "pinned": bool(meta.get("pinned") or meta.get("protected")),
+        "content": strip_wikilinks(bucket.get("content", "")),
+    }
+    if score is not None:
+        item["score"] = score
+    if surface_type:
+        item["surface_type"] = surface_type
+    return item
+
+
+# =============================================================
 # Tool 1: breath — Breathe
 # 工具 1：breath — 呼吸
 #
@@ -503,11 +557,38 @@ async def breath(
     arousal: float = -1,
     max_results: int = 20,
     importance_min: int = -1,
+    bucket_id: str = "",
+    structured: bool = False,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。bucket_id=直读指定桶全文(不脱水不截断)。structured=True返回JSON结构化items(逐条带元数据,防下游整段截断)。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
+
+    # --- Direct read mode: fetch one bucket's FULL content by ID ---
+    # --- 直读模式：按 bucket_id 读取单桶全文（不脱水、不截断）---
+    if bucket_id and bucket_id.strip():
+        bucket = await bucket_mgr.get(bucket_id.strip())
+        if not bucket:
+            return f"未找到记忆桶: {bucket_id.strip()}"
+        await bucket_mgr.touch(bucket["id"])
+        meta = bucket["metadata"]
+        if structured:
+            return _json_lib.dumps({
+                "mode": "direct",
+                "items": [_bucket_to_item(bucket, full=True)],
+            }, ensure_ascii=False)
+        created = str(meta.get("created", ""))[:19]
+        domains = ",".join(meta.get("domain", []))
+        return (
+            f"[bucket_id:{bucket['id']}] {meta.get('name', bucket['id'])}\n"
+            f"创建:{created} 主题:{domains} "
+            f"V{meta.get('valence', 0.5):.1f}/A{meta.get('arousal', 0.3):.1f} "
+            f"重要:{meta.get('importance', '?')}"
+            f"{' [已解决]' if meta.get('resolved') else ''}"
+            f"{' 📌' if meta.get('pinned') or meta.get('protected') else ''}\n"
+            f"---\n{strip_wikilinks(bucket['content'])}"
+        )
 
     # --- importance_min mode: bulk fetch by importance threshold ---
     # --- 重要度批量拉取模式：跳过语义搜索，按 importance 降序返回 ---
@@ -526,6 +607,7 @@ async def breath(
         if not filtered:
             return f"没有重要度 >= {importance_min} 的记忆。"
         results = []
+        items = []
         token_used = 0
         for b in filtered:
             if token_used >= max_tokens:
@@ -538,9 +620,12 @@ async def breath(
                     break
                 imp = b["metadata"].get("importance", 0)
                 results.append(f"[importance:{imp}] [bucket_id:{b['id']}] {summary}")
+                items.append(_bucket_to_item(b))
                 token_used += t
             except Exception as e:
                 logger.warning(f"importance_min dehydrate failed: {e}")
+        if structured:
+            return _json_lib.dumps({"mode": "importance", "items": items}, ensure_ascii=False)
         return "\n---\n".join(results) if results else "没有可以展示的记忆。"
 
     # --- No args or empty query: surfacing mode (weight pool active push) ---
@@ -578,9 +663,15 @@ async def breath(
             and not b["metadata"].get("protected", False)
         ]
 
+        # --- Surfacing cooldown: recently surfaced buckets sit this round out ---
+        # --- 浮现冷却：刚浮现过的桶本轮沉默，把名额腾给别的记忆 ---
+        cooling = [b for b in unresolved if bucket_mgr.surfacing_cooldown_active(b["metadata"])]
+        unresolved = [b for b in unresolved if not bucket_mgr.surfacing_cooldown_active(b["metadata"])]
+
         logger.info(
             f"Breath surfacing: {len(all_buckets)} total, "
-            f"{len(pinned_buckets)} pinned, {len(unresolved)} unresolved"
+            f"{len(pinned_buckets)} pinned, {len(unresolved)} unresolved, "
+            f"{len(cooling)} cooling"
         )
 
         scored = sorted(
@@ -588,6 +679,9 @@ async def breath(
             key=lambda b: decay_engine.calculate_score(b["metadata"]),
             reverse=True,
         )
+        # Near-duplicate merge: same-window look-alikes only surface once
+        # 近重合并：同时段太像的记忆只浮一条，名额腾给别的
+        scored = bucket_mgr.dedupe_near_duplicates(scored)
 
         if scored:
             top_scores = [(b["metadata"].get("name", b["id"]), decay_engine.calculate_score(b["metadata"])) for b in scored[:5]]
@@ -627,6 +721,7 @@ async def breath(
         candidates = candidates[:max_results]
 
         dynamic_results = []
+        surfaced_items = []
         for b in candidates:
             if token_budget <= 0:
                 break
@@ -636,16 +731,30 @@ async def breath(
                 summary_tokens = count_tokens_approx(summary)
                 if summary_tokens > token_budget:
                     break
-                # NOTE: no touch() here — surfacing should NOT reset decay timer
+                # NOTE: no touch() here — surfacing should NOT reset decay timer.
+                # mark_surfaced only: cooldown bookkeeping + slight reinforcement.
+                # 只做浮现标记：冷却记账 + 轻微加固（用进废退），不重置衰减计时。
                 score = decay_engine.calculate_score(b["metadata"])
                 dynamic_results.append(f"[权重:{score:.2f}] [bucket_id:{b['id']}] {summary}")
+                surfaced_items.append(_bucket_to_item(b, score=score, surface_type="surface"))
+                await bucket_mgr.mark_surfaced(b["id"])
                 token_budget -= summary_tokens
             except Exception as e:
                 logger.warning(f"Failed to dehydrate surfaced bucket / 浮现脱水失败: {e}")
                 continue
 
         if not pinned_results and not dynamic_results:
-            return "权重池平静，没有需要处理的记忆。"
+            return _json_lib.dumps({"mode": "surface", "items": []}, ensure_ascii=False) if structured \
+                else "权重池平静，没有需要处理的记忆。"
+
+        if structured:
+            pinned_items = [
+                _bucket_to_item(b, surface_type="pinned") for b in pinned_buckets
+            ]
+            return _json_lib.dumps(
+                {"mode": "surface", "items": pinned_items + surfaced_items},
+                ensure_ascii=False,
+            )
 
         parts = []
         if pinned_results:
@@ -697,25 +806,46 @@ async def breath(
     # --- 搜索模式排除钉选桶（它们在浮现模式中始终可见）---
     matches = [b for b in matches if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))]
 
-    # --- Vector similarity channel: find semantically related buckets ---
-    # --- 向量相似度通道：找到语义相关的桶 ---
-    matched_ids = {b["id"] for b in matches}
+    # --- Unified candidate pool: fuzzy + vector channels on ONE scale ---
+    # --- 统一候选池：关键词与向量两路命中放进同一个池子按同一分制排序 ---
+    # (was: vector results appended AFTER fuzzy results then truncated —
+    #  the "append-then-truncate" anti-pattern; 旧版是追加后截断的反模式)
+    pool = {b["id"]: b for b in matches}
     try:
         vector_results = await embedding_engine.search_similar(query, top_k=max(max_results, 20))
-        for bucket_id, sim_score in vector_results:
-            if bucket_id not in matched_ids and sim_score > 0.5:
-                bucket = await bucket_mgr.get(bucket_id)
-                if bucket and not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected")):
-                    bucket["score"] = round(sim_score * 100, 2)
-                    bucket["vector_match"] = True
-                    matches.append(bucket)
-                    matched_ids.add(bucket_id)
+        for vec_id, sim_score in vector_results:
+            if sim_score <= 0.5:
+                continue
+            if vec_id in pool:
+                # Both channels agree → small confidence bonus
+                # 两路同时命中 → 小幅置信加分
+                pool[vec_id]["score"] = round(min(100.0, pool[vec_id].get("score", 0) + 5.0), 2)
+                continue
+            bucket = await bucket_mgr.get(vec_id)
+            if not bucket or bucket["metadata"].get("pinned") or bucket["metadata"].get("protected"):
+                continue
+            normalized = bucket_mgr.score_for_query(
+                query, bucket, q_valence, q_arousal,
+                topic_override=sim_score, enforce_threshold=False,
+            )
+            if normalized is None:
+                continue
+            bucket["score"] = normalized
+            bucket["vector_match"] = True
+            pool[vec_id] = bucket
     except Exception as e:
         logger.warning(f"Vector search failed, using keyword only / 向量搜索失败: {e}")
 
+    # Sort once → near-duplicate merge → truncate
+    # 排序一次 → 近重合并 → 截断
+    candidates = sorted(pool.values(), key=lambda b: b.get("score", 0), reverse=True)
+    candidates = bucket_mgr.dedupe_near_duplicates(candidates)
+    candidates = candidates[:max_results]
+
     results = []
+    items = []
     token_used = 0
-    for bucket in matches:
+    for bucket in candidates:
         if token_used >= max_tokens:
             break
         try:
@@ -731,11 +861,13 @@ async def breath(
             if token_used + summary_tokens > max_tokens:
                 break
             await bucket_mgr.touch(bucket["id"])
+            surface_type = "vector" if bucket.get("vector_match") else "keyword"
             if bucket.get("vector_match"):
                 summary = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
             else:
                 summary = f"[bucket_id:{bucket['id']}] {summary}"
             results.append(summary)
+            items.append(_bucket_to_item(bucket, score=bucket.get("score"), surface_type=surface_type))
             token_used += summary_tokens
         except Exception as e:
             logger.warning(f"Failed to dehydrate search result / 检索结果脱水失败: {e}")
@@ -743,13 +875,13 @@ async def breath(
 
     # --- Random surfacing: when search returns < 3, 40% chance to float old memories ---
     # --- 随机浮现：检索结果不足 3 条时，40% 概率从低权重旧桶里漂上来 ---
-    if len(matches) < 3 and random.random() < 0.4:
+    if len(candidates) < 3 and random.random() < 0.4:
         try:
             all_buckets = await bucket_mgr.list_all(include_archive=False)
-            matched_ids = {b["id"] for b in matches}
+            candidate_ids = {b["id"] for b in candidates}
             low_weight = [
                 b for b in all_buckets
-                if b["id"] not in matched_ids
+                if b["id"] not in candidate_ids
                 and decay_engine.calculate_score(b["metadata"]) < 2.0
             ]
             if low_weight:
@@ -759,16 +891,22 @@ async def breath(
                     clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                     summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                     drift_results.append(f"[surface_type: random]\n{summary}")
+                    items.append(_bucket_to_item(b, surface_type="random"))
                 results.append("--- 忽然想起来 ---\n" + "\n---\n".join(drift_results))
         except Exception as e:
             logger.warning(f"Random surfacing failed / 随机浮现失败: {e}")
 
     if not results:
         await _fire_webhook("breath", {"mode": "empty", "matches": 0})
-        return "未找到相关记忆。"
+        return _json_lib.dumps({"mode": "search", "items": []}, ensure_ascii=False) if structured \
+            else "未找到相关记忆。"
+
+    if structured:
+        await _fire_webhook("breath", {"mode": "ok", "matches": len(candidates), "structured": True})
+        return _json_lib.dumps({"mode": "search", "items": items}, ensure_ascii=False)
 
     final_text = "\n---\n".join(results)
-    await _fire_webhook("breath", {"mode": "ok", "matches": len(matches), "chars": len(final_text)})
+    await _fire_webhook("breath", {"mode": "ok", "matches": len(candidates), "chars": len(final_text)})
     return final_text
 
 
@@ -850,6 +988,7 @@ async def hold(
     final_arousal = arousal if 0 <= arousal <= 1 else auto_arousal
 
     all_tags = list(dict.fromkeys(auto_tags + extra_tags))
+    domain = await _autofill_domain(content, domain, all_tags)
 
     # --- Pinned buckets bypass merge and are created directly in permanent dir ---
     # --- 钉选桶跳过合并，直接新建到 permanent 目录 ---
@@ -1093,6 +1232,9 @@ async def pulse(include_archive: bool = False) -> str:
     if not buckets:
         return status + "\n记忆库为空。"
 
+    # --- Sort by creation time, newest first / 按创建时间倒序，最新在前 ---
+    buckets.sort(key=lambda b: str(b.get("metadata", {}).get("created", "")), reverse=True)
+
     lines = []
     for b in buckets:
         meta = b.get("metadata", {})
@@ -1116,8 +1258,10 @@ async def pulse(include_archive: bool = False) -> str:
         val = meta.get("valence", 0.5)
         aro = meta.get("arousal", 0.3)
         resolved_tag = " [已解决]" if meta.get("resolved", False) else ""
+        created_date = str(meta.get("created", ""))[:10]  # YYYY-MM-DD
         lines.append(
             f"{icon} [{meta.get('name', b['id'])}]{resolved_tag} "
+            f"{created_date} "
             f"bucket_id:{b['id']} "
             f"主题:{domains} "
             f"情感:V{val:.1f}/A{aro:.1f} "
@@ -1126,7 +1270,7 @@ async def pulse(include_archive: bool = False) -> str:
             f"标签:{','.join(meta.get('tags', []))}"
         )
 
-    return status + "\n=== 记忆列表 ===\n" + "\n".join(lines)
+    return status + "\n=== 记忆列表（新→旧）===\n" + "\n".join(lines)
 
 
 # =============================================================

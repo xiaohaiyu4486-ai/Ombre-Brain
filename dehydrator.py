@@ -354,6 +354,9 @@ class Dehydrator:
             except (ValueError, TypeError):
                 valence, arousal = 0.5, 0.3
             header = f"📌 记忆桶: {name}"
+            created = str(metadata.get("created", ""))
+            if created:
+                header += f" [{created[:10]}]"  # YYYY-MM-DD
             if domains:
                 header += f" [主题:{domains}]"
             header += f" [情感:V{valence:.1f}/A{arousal:.1f}]"

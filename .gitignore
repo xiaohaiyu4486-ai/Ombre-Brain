@@ -19,3 +19,4 @@ data/
 tests/integration/
 tests/regression/
 tests/unit/
+.venv-test/

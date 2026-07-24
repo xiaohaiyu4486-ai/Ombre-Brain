@@ -327,14 +327,18 @@ async def breath_hook(request):
         all_buckets = await bucket_mgr.list_all(include_archive=False)
         # pinned
         pinned = [b for b in all_buckets if b["metadata"].get("pinned") or b["metadata"].get("protected")]
-        # top 2 unresolved by score
-        unresolved = [b for b in all_buckets
-                      if not b["metadata"].get("resolved", False)
-                      and b["metadata"].get("type") not in ("permanent", "feel")
-                      and not b["metadata"].get("pinned")
-                      and not b["metadata"].get("protected")
-                      and not bucket_mgr.surfacing_cooldown_active(b["metadata"])]
-        scored = sorted(unresolved, key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
+        # Recent buckets: newest first, full text（与 breath 浮现模式同款，小乖拍板 2026.7.24）
+        recent = [b for b in all_buckets
+                  if not b["metadata"].get("resolved", False)
+                  and not b["metadata"].get("digested", False)
+                  and b["metadata"].get("type") not in ("permanent", "feel")
+                  and not b["metadata"].get("pinned")
+                  and not b["metadata"].get("protected")]
+        recent.sort(
+            key=lambda b: str(b["metadata"].get("created", b["metadata"].get("last_active", ""))),
+            reverse=True,
+        )
+        recent = bucket_mgr.dedupe_near_duplicates(recent)
 
         parts = []
         token_budget = 10000
@@ -343,15 +347,8 @@ async def breath_hook(request):
             parts.append(f"📌 [核心准则] {summary}")
             token_budget -= count_tokens_approx(summary)
 
-        # Diversity: top-1 fixed + shuffle rest from top-20
-        candidates = list(scored)
-        if len(candidates) > 1:
-            top1 = [candidates[0]]
-            pool = candidates[1:min(20, len(candidates))]
-            random.shuffle(pool)
-            candidates = top1 + pool + candidates[min(20, len(candidates)):]
         # Hard cap: max 20 surfacing buckets in hook
-        candidates = candidates[:20]
+        candidates = recent[:20]
 
         for b in candidates:
             if token_budget <= 0:
@@ -653,72 +650,39 @@ async def breath(
                 logger.warning(f"Failed to dehydrate pinned bucket / 钉选桶脱水失败: {e}")
                 continue
 
-        # --- Unresolved buckets: surface top N by weight ---
-        # --- 未解决桶：按权重浮现前 N 条 ---
-        unresolved = [
+        # --- Recent buckets: newest first, full text ---
+        # --- 最近的桶：按时间倒序出原文，不再按权重池抽签/洗牌 ---
+        # 小乖拍板（2026.7.24）：浮现=钉选原文+最近原文，可预测、省token。
+        # 冷却不在此过滤——醒来每次都该看到同一批"最近"，连续性优先；
+        # mark_surfaced 记账保留（用进废退加固仍生效）。
+        recent = [
             b for b in all_buckets
             if not b["metadata"].get("resolved", False)
+            and not b["metadata"].get("digested", False)
             and b["metadata"].get("type") not in ("permanent", "feel")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
         ]
-
-        # --- Surfacing cooldown: recently surfaced buckets sit this round out ---
-        # --- 浮现冷却：刚浮现过的桶本轮沉默，把名额腾给别的记忆 ---
-        cooling = [b for b in unresolved if bucket_mgr.surfacing_cooldown_active(b["metadata"])]
-        unresolved = [b for b in unresolved if not bucket_mgr.surfacing_cooldown_active(b["metadata"])]
-
-        logger.info(
-            f"Breath surfacing: {len(all_buckets)} total, "
-            f"{len(pinned_buckets)} pinned, {len(unresolved)} unresolved, "
-            f"{len(cooling)} cooling"
-        )
-
-        scored = sorted(
-            unresolved,
-            key=lambda b: decay_engine.calculate_score(b["metadata"]),
+        recent.sort(
+            key=lambda b: str(b["metadata"].get("created", b["metadata"].get("last_active", ""))),
             reverse=True,
         )
         # Near-duplicate merge: same-window look-alikes only surface once
         # 近重合并：同时段太像的记忆只浮一条，名额腾给别的
-        scored = bucket_mgr.dedupe_near_duplicates(scored)
+        recent = bucket_mgr.dedupe_near_duplicates(recent)
 
-        if scored:
-            top_scores = [(b["metadata"].get("name", b["id"]), decay_engine.calculate_score(b["metadata"])) for b in scored[:5]]
-            logger.info(f"Top unresolved scores: {top_scores}")
+        logger.info(
+            f"Breath surfacing: {len(all_buckets)} total, "
+            f"{len(pinned_buckets)} pinned, {len(recent)} recent-eligible"
+        )
 
-        # --- Cold-start detection: never-seen important buckets surface first ---
-        # --- 冷启动检测：从未被访问过且重要度>=8的桶优先插入最前面（最多2个）---
-        cold_start = [
-            b for b in unresolved
-            if int(b["metadata"].get("activation_count", 0)) == 0
-            and int(b["metadata"].get("importance", 0)) >= 8
-        ][:2]
-        cold_start_ids = {b["id"] for b in cold_start}
-        # Merge: cold_start first, then scored (excluding duplicates)
-        scored_deduped = [b for b in scored if b["id"] not in cold_start_ids]
-        scored_with_cold = cold_start + scored_deduped
-
-        # --- Token-budgeted surfacing with diversity + hard cap ---
-        # --- 按 token 预算浮现，带多样性 + 硬上限 ---
-        # Top-1 always surfaces; rest sampled from top-20 for diversity
+        # --- Token-budgeted surfacing with hard cap ---
+        # --- 按 token 预算浮现，带硬上限 ---
         token_budget = max_tokens
         for r in pinned_results:
             token_budget -= count_tokens_approx(r)
 
-        candidates = list(scored_with_cold)
-        if len(candidates) > 1:
-            # Cold-start buckets stay at front; shuffle rest from top-20
-            n_cold = len(cold_start)
-            non_cold = candidates[n_cold:]
-            if len(non_cold) > 1:
-                top1 = [non_cold[0]]
-                pool = non_cold[1:min(20, len(non_cold))]
-                random.shuffle(pool)
-                non_cold = top1 + pool + non_cold[min(20, len(non_cold)):]
-            candidates = cold_start + non_cold
-        # Hard cap: never surface more than max_results buckets
-        candidates = candidates[:max_results]
+        candidates = recent[:max_results]
 
         dynamic_results = []
         surfaced_items = []
@@ -732,11 +696,11 @@ async def breath(
                 if summary_tokens > token_budget:
                     break
                 # NOTE: no touch() here — surfacing should NOT reset decay timer.
-                # mark_surfaced only: cooldown bookkeeping + slight reinforcement.
-                # 只做浮现标记：冷却记账 + 轻微加固（用进废退），不重置衰减计时。
-                score = decay_engine.calculate_score(b["metadata"])
-                dynamic_results.append(f"[权重:{score:.2f}] [bucket_id:{b['id']}] {summary}")
-                surfaced_items.append(_bucket_to_item(b, score=score, surface_type="surface"))
+                # mark_surfaced only: bookkeeping + slight reinforcement.
+                # 只做浮现标记：记账 + 轻微加固（用进废退），不重置衰减计时。
+                created = str(b["metadata"].get("created", ""))[:16]
+                dynamic_results.append(f"[{created}] [bucket_id:{b['id']}] {summary}")
+                surfaced_items.append(_bucket_to_item(b, surface_type="recent"))
                 await bucket_mgr.mark_surfaced(b["id"])
                 token_budget -= summary_tokens
             except Exception as e:

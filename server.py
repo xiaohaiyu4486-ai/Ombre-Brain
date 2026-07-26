@@ -316,6 +316,14 @@ async def health_check(request):
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
 
 
+# Recent-surfacing floor: pinned buckets must never starve "最近"
+# 最近浮现保底额度：钉选桶再多再长，也不许把"最近"挤成零条。
+# 背景（2026.7.26）：钉选桶累积到14条后，其 token 开销已超过 max_tokens 上限，
+# 浮现循环第一句 token_budget<=0 就 break，7/24 修好的"最近原文"一条都出不来。
+# 钉选是红线不压缩，所以给"最近"单独留一份不被侵占的额度。
+RECENT_FLOOR_TOKENS = 6000
+
+
 # =============================================================
 # /breath-hook endpoint: Dedicated hook for SessionStart
 # 会话启动专用挂载点
@@ -347,19 +355,25 @@ async def breath_hook(request):
             parts.append(f"📌 [核心准则] {summary}")
             token_budget -= count_tokens_approx(summary)
 
+        # 钉选吃超了也要给"最近"留够（见 RECENT_FLOOR_TOKENS）
+        token_budget = max(token_budget, RECENT_FLOOR_TOKENS)
+
         # Hard cap: max 20 surfacing buckets in hook
         candidates = recent[:20]
 
+        recent_count = 0
         for b in candidates:
             if token_budget <= 0:
                 break
             summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
             summary_tokens = count_tokens_approx(summary)
-            if summary_tokens > token_budget:
+            # 头一条最近的再长也要给——醒来至少看得见最近发生的一件事
+            if summary_tokens > token_budget and recent_count > 0:
                 break
             parts.append(summary)
             await bucket_mgr.mark_surfaced(b["id"])
             token_budget -= summary_tokens
+            recent_count += 1
 
         if not parts:
             await _fire_webhook("breath_hook", {"surfaced": 0})
@@ -682,6 +696,9 @@ async def breath(
         for r in pinned_results:
             token_budget -= count_tokens_approx(r)
 
+        # 钉选吃超了也要给"最近"留够（见 RECENT_FLOOR_TOKENS）
+        token_budget = max(token_budget, RECENT_FLOOR_TOKENS)
+
         candidates = recent[:max_results]
 
         dynamic_results = []
@@ -693,7 +710,8 @@ async def breath(
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 summary_tokens = count_tokens_approx(summary)
-                if summary_tokens > token_budget:
+                # 头一条最近的再长也要给——醒来至少看得见最近发生的一件事
+                if summary_tokens > token_budget and dynamic_results:
                     break
                 # NOTE: no touch() here — surfacing should NOT reset decay timer.
                 # mark_surfaced only: bookkeeping + slight reinforcement.

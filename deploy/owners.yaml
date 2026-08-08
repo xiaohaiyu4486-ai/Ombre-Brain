@@ -1,0 +1,10 @@
+# Local dual-AI layout. Paths are resolved relative to this file.
+# Both vaults live under the repository's ignored data/ directory.
+owners:
+  - name: Claude
+    port: 18001
+    vault: ../data/claude
+
+  - name: GPT
+    port: 18002
+    vault: ../data/gpt

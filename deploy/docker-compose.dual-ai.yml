@@ -1,0 +1,63 @@
+# Ombre Brain dual-AI deployment.
+#
+# Claude and GPT run as separate services with separate ports, credentials,
+# configuration files, vector databases, caches, and memory vaults.
+#
+# Start from the repository root:
+#   docker compose --env-file deploy/.env \
+#     -f deploy/docker-compose.dual-ai.yml up -d --build
+
+x-common-env: &common-env
+  OMBRE_TRANSPORT: streamable-http
+  OMBRE_BIND_ADDRESS: ${OMBRE_BIND_ADDRESS:-127.0.0.1}
+  OMBRE_ALLOW_INSECURE_MCP: ${OMBRE_ALLOW_INSECURE_MCP:-false}
+  OMBRE_MCP_AUTH_MODE: ${OMBRE_MCP_AUTH_MODE:-token}
+  OMBRE_OWNER_COUNT: "2"
+  OMBRE_COMPRESS_API_KEY: ${OMBRE_COMPRESS_API_KEY:-}
+  OMBRE_COMPRESS_BASE_URL: ${OMBRE_COMPRESS_BASE_URL:-}
+  OMBRE_COMPRESS_MODEL: ${OMBRE_COMPRESS_MODEL:-}
+  OMBRE_EMBED_API_KEY: ${OMBRE_EMBED_API_KEY:-}
+  OMBRE_EMBED_BASE_URL: ${OMBRE_EMBED_BASE_URL:-}
+  OMBRE_EMBED_MODEL: ${OMBRE_EMBED_MODEL:-}
+  OMBRE_TRUSTED_PROXY_CIDRS: "${OMBRE_TRUSTED_PROXY_CIDRS:-127.0.0.0/8,::1/128}"
+  TUNNEL_EDGE: ${TUNNEL_EDGE-region1.v2.argotunnel.com:7844,region2.v2.argotunnel.com:7844}
+  TUNNEL_TRANSPORT_PROTOCOL: ${TUNNEL_TRANSPORT_PROTOCOL:-http2}
+
+services:
+  claude:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: ombre-claude
+    restart: unless-stopped
+    ports:
+      - "${OMBRE_BIND_ADDRESS:-127.0.0.1}:18001:8000"
+    environment:
+      <<: *common-env
+      OMBRE_OWNER_NAME: Claude
+      OMBRE_DASHBOARD_PASSWORD: ${OMBRE_CLAUDE_PASSWORD:?OMBRE_CLAUDE_PASSWORD is required}
+      OMBRE_MCP_TOKEN: ${OMBRE_CLAUDE_MCP_TOKEN:?OMBRE_CLAUDE_MCP_TOKEN is required}
+      OMBRE_HOST_VAULT_DIR: ${OMBRE_CLAUDE_VAULT_DIR:-}
+    volumes:
+      - type: bind
+        source: ${OMBRE_CLAUDE_VAULT_DIR:-../data/claude}
+        target: /app/buckets
+
+  gpt:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: ombre-gpt
+    restart: unless-stopped
+    ports:
+      - "${OMBRE_BIND_ADDRESS:-127.0.0.1}:18002:8000"
+    environment:
+      <<: *common-env
+      OMBRE_OWNER_NAME: GPT
+      OMBRE_DASHBOARD_PASSWORD: ${OMBRE_GPT_PASSWORD:?OMBRE_GPT_PASSWORD is required}
+      OMBRE_MCP_TOKEN: ${OMBRE_GPT_MCP_TOKEN:?OMBRE_GPT_MCP_TOKEN is required}
+      OMBRE_HOST_VAULT_DIR: ${OMBRE_GPT_VAULT_DIR:-}
+    volumes:
+      - type: bind
+        source: ${OMBRE_GPT_VAULT_DIR:-../data/gpt}
+        target: /app/buckets

@@ -1,41 +1,56 @@
+# Render staging Blueprint for the dual-AI migration.
+#
+# Deliberately does NOT declare the existing `ombre-brain` service. Syncing
+# this Blueprint must not adopt, redeploy, or mutate Claude's live legacy OB.
+# Phase 1 creates only `ombre-brain-gpt` with fresh empty memory. After GPT is
+# healthy and connected, Phase 2 adds `ombre-brain-claude-next` to this same
+# Blueprint for the legacy-vault migration rehearsal.
+
 services:
   - type: web
-    name: ombre-brain
-    env: python
+    name: ombre-brain-gpt
+    runtime: python
     region: oregon
-    # Persistent disks require a paid service.  Starter is the minimum Render
-    # plan supported by this Blueprint (512 MiB RAM).
     plan: starter
-    # Keep Render installs reproducible and aligned with Docker/CI.  The lock
-    # file pins every transitive dependency and includes artifact hashes.
+    branch: codex/dual-ai-upgrade
+    autoDeployTrigger: "off"
     buildCommand: pip install --require-hashes -r requirements.lock.txt
     startCommand: python src/server.py
+    healthCheckPath: /health
     envVars:
       - key: OMBRE_TRANSPORT
         value: streamable-http
+      - key: OMBRE_BIND_HOST
+        value: 0.0.0.0
+      - key: OMBRE_OWNER_NAME
+        value: GPT
+      - key: OMBRE_OWNER_COUNT
+        value: "2"
+      - key: OMBRE_MCP_AUTH_MODE
+        value: hybrid
+      - key: OMBRE_MCP_TOKEN
+        generateValue: true
+      - key: OMBRE_DASHBOARD_PASSWORD
+        generateValue: true
       - key: OMBRE_EMBED_BACKEND
         value: api
       - key: OMBRE_EMBED_API_KEY
-        sync: false          # Set in Render dashboard
+        sync: false
       - key: OMBRE_EMBED_BASE_URL
-        sync: false          # e.g. https://generativelanguage.googleapis.com/v1beta/openai/
+        sync: false
       - key: OMBRE_EMBED_MODEL
-        sync: false          # e.g. gemini-embedding-001
+        sync: false
       - key: OMBRE_COMPRESS_API_KEY
-        sync: false          # Set in Render dashboard (any OpenAI-compatible key)
+        sync: false
       - key: OMBRE_COMPRESS_BASE_URL
-        sync: false          # e.g. https://generativelanguage.googleapis.com/v1beta/openai/
+        sync: false
       - key: OMBRE_COMPRESS_MODEL
-        sync: false          # e.g. gemini-2.5-flash
-      # Render services are public as soon as they boot.  Generate a secret at
-      # provisioning time so an anonymous first request cannot claim setup.
-      - key: OMBRE_DASHBOARD_PASSWORD
-        generateValue: true
+        sync: false
       - key: OMBRE_BUCKETS_DIR
         value: /opt/render/project/src/buckets
       - key: OMBRE_CONFIG_PATH
         value: /opt/render/project/src/buckets/config.yaml
     disk:
-      name: ombre-buckets
+      name: ombre-gpt-data
       mountPath: /opt/render/project/src/buckets
-      sizeGB: 5              # Bucket data + derived embedding index; local bge-m3 is not run on Render
+      sizeGB: 1

@@ -539,6 +539,9 @@ def load_config(config_path: Optional[str] = None) -> dict:
 
     # 顶层运行时
     _apply_env_override(config, "OMBRE_TRANSPORT", "transport")
+    # 托管平台的反向代理常让应用只看见内部 HTTP。允许部署清单显式声明
+    # 外部 HTTPS origin，供 OAuth issuer/resource 在进程启动时稳定绑定。
+    _apply_env_override(config, "OMBRE_PUBLIC_URL", "deployment", "public_url")
     # transport 名归一化 —— 单一真源，让 server.py / 诊断接口拿到的都是规范值。
     # 背景：远程接入（Operit / 安卓 / 自建前端等）该填 "streamable-http"，但很多人凭
     # 直觉写成 "http" / "streamable_http" / "streamablehttp" 等变体；server.py 的入口用

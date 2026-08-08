@@ -35,6 +35,7 @@
 - `OMBRE_TRANSPORT`：`stdio`、`sse` 或 `streamable-http`。
 - `OMBRE_PORT`：容器或裸机监听端口。
 - `OMBRE_BIND_HOST`：进程实际监听地址；容器/PaaS 通常需要 `0.0.0.0`，裸机仅限本机访问时应设为 `127.0.0.1`。
+- `OMBRE_PUBLIC_URL`：公网部署的规范 HTTPS origin（例如 `https://ob.example.com`）；用于在反向代理后稳定生成 OAuth issuer、resource 与授权端点。
 - `OMBRE_MCP_REQUIRE_AUTH`：是否要求 MCP 鉴权。
 - `OMBRE_MCP_AUTH_MODE`：`oauth`、`token` 或 `hybrid`。`hybrid` 保留 OAuth 动态注册，同时让 `Authorization: Bearer` 也接受预置静态 Token；关闭鉴权仍由 `OMBRE_MCP_REQUIRE_AUTH=false` 控制。
 - `OMBRE_MCP_TOKEN`：静态 Token / OAuth + 静态 Token 共存模式的预置密钥。

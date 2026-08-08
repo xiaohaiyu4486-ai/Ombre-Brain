@@ -33,6 +33,10 @@ Dashboard after the service is healthy; memory-writing tools remain unavailable
 until a compression provider key is saved, and semantic search remains in
 standby until an embedding provider key is saved.
 
+The GPT Blueprint sets `OMBRE_PUBLIC_URL` to its Render HTTPS origin. Render's
+internal hop is HTTP, so this explicit external origin prevents OAuth discovery
+from advertising unusable `http://` issuer and resource URLs.
+
 ## Local rehearsal topology
 
 | Owner | Port | Default host vault | Dashboard password | MCP token |

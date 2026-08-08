@@ -25,6 +25,14 @@ Each Render service has its own hostname and one attached persistent disk.
 `OMBRE_MCP_AUTH_MODE=hybrid` permits OAuth clients and a separate static token;
 each service receives different generated Dashboard and MCP credentials.
 
+The phase-1 Blueprint deliberately leaves compression and embedding provider
+settings unset. This lets the empty GPT service deploy and pass `/health`
+without copying Claude's provider secrets or locking provider values into
+environment overrides. Configure and test GPT's two engines from its own
+Dashboard after the service is healthy; memory-writing tools remain unavailable
+until a compression provider key is saved, and semantic search remains in
+standby until an embedding provider key is saved.
+
 ## Local rehearsal topology
 
 | Owner | Port | Default host vault | Dashboard password | MCP token |

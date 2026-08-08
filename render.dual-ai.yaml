@@ -32,20 +32,6 @@ services:
         generateValue: true
       - key: OMBRE_DASHBOARD_PASSWORD
         generateValue: true
-      - key: OMBRE_EMBED_BACKEND
-        value: api
-      - key: OMBRE_EMBED_API_KEY
-        sync: false
-      - key: OMBRE_EMBED_BASE_URL
-        sync: false
-      - key: OMBRE_EMBED_MODEL
-        sync: false
-      - key: OMBRE_COMPRESS_API_KEY
-        sync: false
-      - key: OMBRE_COMPRESS_BASE_URL
-        sync: false
-      - key: OMBRE_COMPRESS_MODEL
-        sync: false
       - key: OMBRE_BUCKETS_DIR
         value: /opt/render/project/src/buckets
       - key: OMBRE_CONFIG_PATH

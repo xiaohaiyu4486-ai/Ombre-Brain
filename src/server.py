@@ -933,9 +933,10 @@ async def trace(
     why_remembered、meaning_append/replace、media_append/replace 更新相应元数据。
     reclassify=True 必须单独调用：仅当现有元数据完整符合中性默认签名
     (valence=0.5, arousal=0.3, importance=5, tags 为空)时，才按当前打标模型
-    重新生成 domain/tags/valence/arousal/importance；否则为保护人工判断而跳过。
-    正文与标题始终保持逐字不变。reclassify_preview=True 可对任意指定桶只返回
-    current/proposed 对照而不写入，也必须单独调用。
+    回填 tags/valence/arousal；importance 始终保留，已有有效 domain 也保留，
+    仅为空或“未分类”时才补 domain。否则为保护人工判断而跳过。正文与标题始终
+    保持逐字不变。reclassify_preview=True 可对任意指定桶返回 current/proposed、
+    eligible、would_apply/would_preserve 对照而不写入，也必须单独调用。
 
     删除边界：delete=True 只会把 Markdown 移入 archive 并标记 deleted_at，不会
     物理抹除。hard_delete=True 仅用于清理创建时明确标记 test_data=True 的测试桶，

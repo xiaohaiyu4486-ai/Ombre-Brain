@@ -32,7 +32,7 @@
     },
     {
       "path": "src/VERSION",
-      "sha256": "cc6b159d17794a4b38003ca52306ae8b8af5d31b1c02b8ccfd1cf8c6cd84add6",
+      "sha256": "c5c71fc4617a7e639a1f6def08626c20809283f694add2894eecd45cf19fdd50",
       "size": 8
     },
     {
@@ -757,8 +757,8 @@
     },
     {
       "path": "src/server.py",
-      "sha256": "8d66c3e9695b05b3b6e269ce56c457326a55ed38ec39b2a0f287e0eba29d846f",
-      "size": 69428
+      "sha256": "f0330916cbd8a23af33f6b764f4228a215c59dec64a170fa13908095fd3450e6",
+      "size": 69551
     },
     {
       "path": "src/server_app.py",
@@ -947,8 +947,8 @@
     },
     {
       "path": "src/tools/trace/core.py",
-      "sha256": "d8078ca37f97345856d735aadc6300b08990f4e643e0f4753ca5f84c66abface",
-      "size": 39118
+      "sha256": "f8bffc77682d3a873334641e08d1e02d5c64e519f1b2da74036674ee624d9282",
+      "size": 39921
     },
     {
       "path": "src/utils.py",
@@ -1067,5 +1067,5 @@
     }
   ],
   "rollout_strategy": "single-node",
-  "version": "2.17.11"
+  "version": "2.17.12"
 }

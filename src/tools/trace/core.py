@@ -599,20 +599,36 @@ async def trace_core(
         model_importance = _safe_int(analysis.get("importance"), current_importance)
         if not 1 <= model_importance <= 10:
             model_importance = current_importance if 1 <= current_importance <= 10 else 5
-        guarded_importance = bool(
-            parse_bool(latest_meta.get("pinned"), default=False)
-            or parse_bool(latest_meta.get("protected"), default=False)
-        )
-        if guarded_importance:
-            model_importance = 10
 
-        reclassify_updates = {
+        model_proposal = {
             "domain": domains,
             "tags": model_tags,
             "valence": model_valence,
             "arousal": model_arousal,
             "importance": model_importance,
         }
+        raw_current_domains = latest_meta.get("domain") or []
+        if isinstance(raw_current_domains, str):
+            raw_current_domains = [raw_current_domains]
+        current_domains = [
+            str(item).strip()[:100]
+            for item in raw_current_domains
+            if str(item or "").strip()
+        ][:3]
+        placeholder_domains = {"未分类", "unclassified"}
+        domain_needs_fill = not current_domains or all(
+            item.casefold() in placeholder_domains for item in current_domains
+        )
+        applied_updates = {
+            "tags": model_tags,
+            "valence": model_valence,
+            "arousal": model_arousal,
+        }
+        if domain_needs_fill:
+            applied_updates["domain"] = domains
+        preserved_fields = {"importance": current_importance}
+        if not domain_needs_fill:
+            preserved_fields["domain"] = current_domains
         if reclassify_preview:
             current_fields = {
                 "domain": latest_meta.get("domain") or [],
@@ -621,23 +637,26 @@ async def trace_core(
                 "arousal": latest_meta.get("arousal"),
                 "importance": latest_meta.get("importance"),
             }
+            eligible = _has_fallback_signature(latest_meta)
             return (
                 f"重打标预览（未写入） {bucket_id}: "
-                f"current={current_fields}; proposed={reclassify_updates}; "
+                f"current={current_fields}; proposed={model_proposal}; "
+                f"eligible={eligible}; "
+                f"would_apply={applied_updates if eligible else {}}; "
+                f"would_preserve={preserved_fields}; "
                 "正文与标题未修改。"
             )
         success = await rt.bucket_mgr.update(
             bucket_id,
             event_actor="llm",
             **lock_precondition,
-            **reclassify_updates,
+            **applied_updates,
         )
         if not success:
             return f"重新打标失败: {bucket_id}"
         return (
             f"已重新打标记忆桶 {bucket_id}（正文与标题未修改）: "
-            f"domain={domains}, tags={model_tags}, valence={model_valence}, "
-            f"arousal={model_arousal}, importance={model_importance}"
+            f"applied={applied_updates}; preserved={preserved_fields}"
         )
     pin_state_changed = (
         pinned in (0, 1) and bool(pinned) != current_pinned

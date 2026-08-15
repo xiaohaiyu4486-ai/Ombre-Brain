@@ -60,7 +60,38 @@ async def test_trace_reclassify_updates_only_derived_metadata(bucket_mgr):
     assert after["metadata"]["tags"] == ["复查", "重要"]
     assert after["metadata"]["valence"] == 0.2
     assert after["metadata"]["arousal"] == 0.8
-    assert after["metadata"]["importance"] == 9
+    assert after["metadata"]["importance"] == 5
+    assert "preserved={'importance': 5}" in result
+
+
+@pytest.mark.asyncio
+async def test_trace_reclassify_preserves_meaningful_domain_and_importance(bucket_mgr):
+    bucket_id = await bucket_mgr.create(
+        content="手表数据线、心率与自动同步的工程记录。",
+        name="工程流水账",
+        importance=5,
+        domain=["健康", "边界"],
+        valence=0.5,
+        arousal=0.3,
+    )
+    analyzer = StaticAnalyzer(result={
+        "domain": ["数字", "身心"],
+        "tags": ["手表数据线", "心率", "自动化"],
+        "valence": 0.75,
+        "arousal": 0.4,
+        "importance": 8,
+    })
+    install_runtime(bucket_mgr, analyzer)
+
+    result = await trace_core(bucket_id, reclassify=True)
+    after = await bucket_mgr.get(bucket_id)
+
+    assert after["metadata"]["domain"] == ["健康", "边界"]
+    assert after["metadata"]["importance"] == 5
+    assert after["metadata"]["tags"] == ["手表数据线", "心率", "自动化"]
+    assert after["metadata"]["valence"] == 0.75
+    assert after["metadata"]["arousal"] == 0.4
+    assert "'domain': ['健康', '边界']" in result
 
 
 @pytest.mark.asyncio
@@ -116,6 +147,9 @@ async def test_trace_reclassify_preview_compares_without_writing(bucket_mgr):
 
     assert "预览（未写入）" in result
     assert "current=" in result and "proposed=" in result
+    assert "eligible=False" in result
+    assert "would_apply={}" in result
+    assert "would_preserve=" in result
     assert analyzer.calls == [before["content"]]
     assert after == before
 

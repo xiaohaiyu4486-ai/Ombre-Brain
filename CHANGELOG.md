@@ -2,6 +2,26 @@
 
 本项目版本号见根目录 `VERSION` 文件，Docker 镜像 tag 与之对应（`p0luz/ombre-brain:<VERSION>`）。
 
+## 2.17.12
+
+### 修复 / Fixed
+
+- 根据真实回填质量复测收紧 `trace(reclassify=True)`：模型只回填 `tags`、
+  `valence`、`arousal`；`importance` 始终保留原值，避免工程流水账与宪法级档案
+  被模型批量打成同一高分。
+- 已有有效 `domain` 保持不变，仅在当前 domain 为空或“未分类”时才采用模型建议，
+  防止有意义的人工/迁移分类被更泛的模型分类覆盖。
+- `reclassify_preview=True` 增加 `eligible`、`would_apply`、`would_preserve`，
+  明确区分模型建议与正式执行时真正会写入的字段。
+
+### 测试 / Tests
+
+- 新增有效 domain 与 importance 保留、缺失 domain 补全、人工桶不可执行预览回归测试。
+
+### 版本 / Version
+
+- 根目录 `VERSION` 与 `src/VERSION` 同步更新为 `2.17.12`。
+
 ## 2.17.11
 
 ### 修复 / Fixed

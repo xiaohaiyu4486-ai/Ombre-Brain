@@ -2,6 +2,25 @@
 
 本项目版本号见根目录 `VERSION` 文件，Docker 镜像 tag 与之对应（`p0luz/ombre-brain:<VERSION>`）。
 
+## 2.17.10
+
+### 修复 / Fixed
+
+- 收紧 `trace(reclassify=True)`：仅当桶仍完整符合迁移默认签名
+  `valence=0.5`、`arousal=0.3`、`importance=5`、空 `tags` 时才重跑打标；
+  已存在人工判断的桶会在调用模型前直接跳过，并在模型返回后再次校验，避免覆盖并发修改。
+- 新增只读 `trace(reclassify_preview=True)`，返回当前值与模型建议的对照，绝不写入；
+  正式重打标和预览均保持正文与标题逐字不变，且必须单独调用。
+- 打标模型调用失败、返回格式无效或期间正文变化时整条不写入，避免部分元数据更新。
+
+### 测试 / Tests
+
+- 新增默认签名保护、人工值跳过、只读预览、失败零写入、参数冲突与 MCP schema/透传回归测试。
+
+### 版本 / Version
+
+- 根目录 `VERSION` 与 `src/VERSION` 同步更新为 `2.17.10`。
+
 ## 2.17.9
 
 ### 修复 / Fixed

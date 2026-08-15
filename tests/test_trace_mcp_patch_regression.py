@@ -35,6 +35,37 @@ async def test_trace_mcp_schema_and_dispatch_include_content_patch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_trace_mcp_schema_and_dispatch_include_safe_reclassification(monkeypatch):
+    import server
+
+    seen = {}
+
+    async def fake_dispatch(**kwargs):
+        seen.update(kwargs)
+        return "previewed"
+
+    monkeypatch.setattr(server._t_trace, "dispatch", fake_dispatch)
+    tool = server.mcp._tool_manager.get_tool("trace")
+    listed = next(item for item in await server.mcp.list_tools() if item.name == "trace")
+
+    expected = {"reclassify", "reclassify_preview"}
+    assert expected <= set(listed.inputSchema["properties"])
+    assert expected <= set(tool.fn_metadata.arg_model.model_fields)
+
+    output = await tool.run(
+        {
+            "bucket_id": "bucket-1",
+            "reclassify_preview": True,
+        }
+    )
+
+    assert output == "previewed"
+    assert seen["bucket_id"] == "bucket-1"
+    assert seen["reclassify"] is False
+    assert seen["reclassify_preview"] is True
+
+
+@pytest.mark.asyncio
 async def test_trace_mcp_schema_dispatch_and_log_include_protected(monkeypatch):
     import server
 

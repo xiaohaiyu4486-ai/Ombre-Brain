@@ -76,6 +76,7 @@ async def trace_core(
     old_str: Optional[str] = "",
     new_str: Optional[str] = None,
     reclassify: Optional[bool] = False,
+    reclassify_preview: Optional[bool] = False,
 ) -> str:
     bucket_id = "" if bucket_id is None else str(bucket_id)
     if name is None:
@@ -128,6 +129,7 @@ async def trace_core(
     hard_delete = parse_bool(hard_delete, default=False)
     restore = parse_bool(restore, default=False)
     reclassify = parse_bool(reclassify, default=False)
+    reclassify_preview = parse_bool(reclassify_preview, default=False)
     delete_reason = "" if delete_reason is None else str(delete_reason).strip()
 
     def _finite_float(value, default: float) -> float:
@@ -186,6 +188,7 @@ async def trace_core(
         "hard_delete": hard_delete,
         "restore": restore,
         "reclassify": reclassify,
+        "reclassify_preview": reclassify_preview,
         "delete_reason_length": len(delete_reason),
         "old_str_length": len(old_str),
         "new_str_length": len(new_str) if new_str_provided else 0,
@@ -198,6 +201,12 @@ async def trace_core(
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
 
+    if reclassify and reclassify_preview:
+        return (
+            "参数冲突：reclassify 与 reclassify_preview 只能选择一个；"
+            "本次未调用打标模型、未修改。"
+        )
+    reclassify_requested = bool(reclassify or reclassify_preview)
     reclassify_conflicts = any((
         bool(name),
         bool(domain),
@@ -225,9 +234,9 @@ async def trace_core(
         bool(old_str),
         new_str_provided,
     ))
-    if reclassify and reclassify_conflicts:
+    if reclassify_requested and reclassify_conflicts:
         return (
-            "参数冲突：reclassify=True 必须单独调用，不能同时修改正文、标题、"
+            "参数冲突：reclassify/reclassify_preview 必须单独调用，不能同时修改正文、标题、"
             "元数据或生命周期；本次未修改。"
         )
 
@@ -482,10 +491,35 @@ async def trace_core(
     if logical_letter and letter_lock_state(bucket, "ai")["locked"]:
         return "这封信尚未向你开放；请使用 Letter 专用入口管理锁状态。"
 
-    if reclassify:
+    if reclassify_requested:
         original_content = str(bucket.get("content") or "")
         if not original_content.strip():
             return f"记忆桶正文为空，无法重新打标: {bucket_id}"
+        original_meta = bucket.get("metadata", {})
+        if not isinstance(original_meta, dict):
+            original_meta = {}
+
+        def _has_fallback_signature(metadata: dict) -> bool:
+            raw_tags = metadata.get("tags")
+            if isinstance(raw_tags, str):
+                tags_empty = not raw_tags.strip()
+            elif isinstance(raw_tags, (list, tuple, set)):
+                tags_empty = not any(str(item or "").strip() for item in raw_tags)
+            else:
+                tags_empty = not raw_tags
+            return bool(
+                math.isclose(_finite_float(metadata.get("valence"), -1), 0.5)
+                and math.isclose(_finite_float(metadata.get("arousal"), -1), 0.3)
+                and _safe_int(metadata.get("importance"), -1) == 5
+                and tags_empty
+            )
+
+        if reclassify and not _has_fallback_signature(original_meta):
+            return (
+                f"已跳过记忆桶 {bucket_id}：现有元数据不是完整的中性默认签名，"
+                "可能包含人工判断；本次未调用打标模型、未修改。"
+                "如需只看模型建议，请单独调用 reclassify_preview=True。"
+            )
         try:
             analysis = await rt.dehydrator.analyze(original_content)
         except Exception as exc:
@@ -509,6 +543,11 @@ async def trace_core(
         latest_meta = latest.get("metadata", {})
         if not isinstance(latest_meta, dict):
             latest_meta = {}
+        if reclassify and not _has_fallback_signature(latest_meta):
+            return (
+                f"记忆桶 {bucket_id} 在重打标期间已获得非默认或人工元数据；"
+                "为避免覆盖，本次未修改。"
+            )
 
         raw_domains = analysis.get("domain")
         if isinstance(raw_domains, str):
@@ -566,6 +605,19 @@ async def trace_core(
             "arousal": model_arousal,
             "importance": model_importance,
         }
+        if reclassify_preview:
+            current_fields = {
+                "domain": latest_meta.get("domain") or [],
+                "tags": latest_meta.get("tags") or [],
+                "valence": latest_meta.get("valence"),
+                "arousal": latest_meta.get("arousal"),
+                "importance": latest_meta.get("importance"),
+            }
+            return (
+                f"重打标预览（未写入） {bucket_id}: "
+                f"current={current_fields}; proposed={reclassify_updates}; "
+                "正文与标题未修改。"
+            )
         success = await rt.bucket_mgr.update(
             bucket_id,
             event_actor="llm",

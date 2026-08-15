@@ -918,6 +918,7 @@ async def trace(
     deletion_decision: Optional[str] = "",
     deletion_ai_reason: Optional[str] = "",
     reclassify: Optional[bool] = False,
+    reclassify_preview: Optional[bool] = False,
 ) -> str:
     """仅在明确需要修改某条已存在记忆时调用，不要猜测 bucket_id 或自行改写记忆。
 
@@ -930,9 +931,11 @@ async def trace(
     old_str/new_str 会在完整原文中做唯一、逐字的局部替换（new_str 可为空以删除），
     两种方式都会重建 embedding，且不能同时使用。status/weight 用于 plan；dont_surface 控制日常浮现；
     why_remembered、meaning_append/replace、media_append/replace 更新相应元数据。
-    reclassify=True 必须单独调用：按当前打标模型为指定 bucket 重新生成
-    domain/tags/valence/arousal/importance，正文与标题保持逐字不变；适合迁移后
-    精确回填旧的中性默认元数据。pinned/protected 桶的 importance 仍锁定为 10。
+    reclassify=True 必须单独调用：仅当现有元数据完整符合中性默认签名
+    (valence=0.5, arousal=0.3, importance=5, tags 为空)时，才按当前打标模型
+    重新生成 domain/tags/valence/arousal/importance；否则为保护人工判断而跳过。
+    正文与标题始终保持逐字不变。reclassify_preview=True 可对任意指定桶只返回
+    current/proposed 对照而不写入，也必须单独调用。
 
     删除边界：delete=True 只会把 Markdown 移入 archive 并标记 deleted_at，不会
     物理抹除。hard_delete=True 仅用于清理创建时明确标记 test_data=True 的测试桶，
@@ -966,6 +969,7 @@ async def trace(
             restore=restore,
             old_str=old_str, new_str=new_str,
             reclassify=reclassify,
+            reclassify_preview=reclassify_preview,
         ),
         op="trace",
         args={
@@ -980,6 +984,7 @@ async def trace(
             "old_str_len": len(str(old_str or "")),
             "new_str_len": len(str(new_str or "")) if new_str is not None else 0,
             "reclassify": reclassify,
+            "reclassify_preview": reclassify_preview,
             "weight": weight, "dont_surface": dont_surface,
             "why_len": len(why_remembered or ""),
             "meaning_append_len": len(meaning_append or ""),

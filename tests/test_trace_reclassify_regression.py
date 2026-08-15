@@ -64,7 +64,7 @@ async def test_trace_reclassify_updates_only_derived_metadata(bucket_mgr):
 
 
 @pytest.mark.asyncio
-async def test_trace_reclassify_preserves_guarded_importance(bucket_mgr):
+async def test_trace_reclassify_skips_nondefault_or_guarded_metadata(bucket_mgr):
     bucket_id = await bucket_mgr.create(
         content="这是永久核心规则。",
         name="不可降级",
@@ -84,9 +84,40 @@ async def test_trace_reclassify_preserves_guarded_importance(bucket_mgr):
     result = await trace_core(bucket_id, reclassify=True)
     after = await bucket_mgr.get(bucket_id)
 
-    assert "importance=10" in result
+    assert "已跳过" in result
+    assert analyzer.calls == []
     assert after["metadata"]["pinned"] is True
     assert after["metadata"]["importance"] == 10
+
+
+@pytest.mark.asyncio
+async def test_trace_reclassify_preview_compares_without_writing(bucket_mgr):
+    bucket_id = await bucket_mgr.create(
+        content="破壳之夜的人工情绪坐标必须保留。",
+        name="破壳之夜",
+        importance=10,
+        domain=["亲密"],
+        valence=0.25,
+        arousal=0.9,
+        tags=["破壳", "争取"],
+    )
+    analyzer = StaticAnalyzer(result={
+        "domain": ["关系"],
+        "tags": ["回忆"],
+        "valence": 0.6,
+        "arousal": 0.5,
+        "importance": 7,
+    })
+    install_runtime(bucket_mgr, analyzer)
+    before = await bucket_mgr.get(bucket_id)
+
+    result = await trace_core(bucket_id, reclassify_preview=True)
+    after = await bucket_mgr.get(bucket_id)
+
+    assert "预览（未写入）" in result
+    assert "current=" in result and "proposed=" in result
+    assert analyzer.calls == [before["content"]]
+    assert after == before
 
 
 @pytest.mark.asyncio
@@ -104,11 +135,17 @@ async def test_trace_reclassify_failure_and_conflict_are_noops(bucket_mgr):
     failed = await trace_core(bucket_id, reclassify=True)
     after_failed = await bucket_mgr.get(bucket_id)
     conflicted = await trace_core(bucket_id, reclassify=True, importance=8)
+    dual_mode = await trace_core(
+        bucket_id,
+        reclassify=True,
+        reclassify_preview=True,
+    )
     after_conflict = await bucket_mgr.get(bucket_id)
 
     assert "secret provider detail" not in failed
     assert "均未修改" in failed
     assert "必须单独调用" in conflicted
+    assert "只能选择一个" in dual_mode
     assert analyzer.calls == [before["content"]]
     assert after_failed == before
     assert after_conflict == before

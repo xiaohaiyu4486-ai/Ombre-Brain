@@ -26,7 +26,8 @@ trace 是 OB 唯一的「写元数据」入口，承接所有桶字段更新和�
                      tags, resolved, pinned, protected, digested, content, delete,
                      status, weight, dont_surface, why_remembered,
                      meaning_append, meaning_replace, media_append, media_replace,
-                     hard_delete, delete_reason, restore, old_str, new_str) → str
+                     hard_delete, delete_reason, restore, old_str, new_str,
+                     reclassify, reclassify_preview) → str
 ========================================
 """
 
@@ -523,12 +524,19 @@ async def trace_core(
         try:
             analysis = await rt.dehydrator.analyze(original_content)
         except Exception as exc:
+            diagnostic_code = str(
+                getattr(exc, "diagnostic_code", "provider_error")
+            ).strip() or "provider_error"
             rt.logger.warning(
                 "trace reclassify analysis failed; bucket unchanged / "
                 "trace 重打标失败，记忆桶保持不变: "
-                f"bucket_id={bucket_id} err_type={type(exc).__name__} detail=hidden"
+                f"bucket_id={bucket_id} err_type={type(exc).__name__} "
+                f"error_code={diagnostic_code} detail=hidden"
             )
-            return "自动重打标失败；正文与元数据均未修改，请检查打标模型连接后重试。"
+            return (
+                f"自动重打标失败（{diagnostic_code}）；正文与元数据均未修改。"
+                "请检查打标模型连接或结构化输出后重试。"
+            )
         if not isinstance(analysis, Mapping):
             return "自动重打标返回格式无效；正文与元数据均未修改。"
 

@@ -149,3 +149,25 @@ async def test_trace_reclassify_failure_and_conflict_are_noops(bucket_mgr):
     assert analyzer.calls == [before["content"]]
     assert after_failed == before
     assert after_conflict == before
+
+
+@pytest.mark.asyncio
+async def test_trace_reclassify_surfaces_safe_diagnostic_code(bucket_mgr):
+    bucket_id = await bucket_mgr.create(
+        content="模型返回损坏 JSON 时不能伪装成默认打标。",
+        name="保持原样",
+        importance=5,
+        domain=["未分类"],
+    )
+    error = RuntimeError("raw provider response must stay hidden")
+    error.diagnostic_code = "invalid_json"
+    analyzer = StaticAnalyzer(error=error)
+    install_runtime(bucket_mgr, analyzer)
+    before = await bucket_mgr.get(bucket_id)
+
+    result = await trace_core(bucket_id, reclassify_preview=True)
+    after = await bucket_mgr.get(bucket_id)
+
+    assert "（invalid_json）" in result
+    assert "raw provider response" not in result
+    assert after == before

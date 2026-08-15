@@ -823,7 +823,7 @@ docker compose -f deploy/docker-compose.yml up -d
 | 现象 | 可能原因 | 解决 |
 |---|---|---|
 | 首次进 Dashboard 设置密码页一闪而过变成登录页 | 已修复（v2.0.4+） | 更新到最新版本 |
-| 所有记忆 domain 显示「未分类」 | ① `max_tokens` 太小，JSON 被截断；② **打标模型太弱**（如 7B 级小模型），吐不出可解析的分类 JSON，OB 兜底为「未分类」 | ① 将 `dehydration.max_tokens` 设为 `4096`；② 换一个够强的打标模型（`gemini-2.0-flash`、`deepseek-ai/DeepSeek-V3`、`Qwen/Qwen2.5-72B-Instruct` 等；7B 级免费小模型不足以稳定产出结构化打标）。OB 的 JSON 提取已容忍模型前后的寒暄，但模型返回空/彻底损坏时只能兜底 |
+| `trace` 重打标报 `empty_response` / `invalid_json` / `invalid_schema` | 模型返回空文本、损坏 JSON 或字段不完整；重打标会拒绝写入，不再把失败伪装成「未分类 / V0.5/A0.3」 | SiliconFlow 建议使用当前预设 `deepseek-ai/DeepSeek-V3.2`；结构化输出失败时换兼容模型后重试。超时会单独显示 `timeout`，不要批量重跑 |
 | Claude.ai 添加 MCP 报「Couldn't register」 | OAuth 端点无法访问（通常是 Tunnel 未启动/域名错误） | 先确认 Dashboard 能正常访问，再添加 MCP |
 | Zeabur / Render 上 OAuth 元数据或授权链接生成 `http://`，Claude.ai 拒绝连接 | 反代在容器内使用 HTTP；转发头来自未配置的代理地址时会被安全策略忽略，且“公网连接地址”尚未保存 | Dashboard → `/onboarding` →“公网安全模式”，填入平台分配的 HTTPS 域名并保存，重启后重新添加连接器；不要用 `0.0.0.0/0` 放宽可信代理 |
 | OAuth 授权页正常弹出但密码输入后报错 | Dashboard 密码错误 | 使用 Dashboard 设置时的密码（不是 Cloudflare 密码） |

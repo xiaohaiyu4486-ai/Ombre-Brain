@@ -2,6 +2,27 @@
 
 本项目版本号见根目录 `VERSION` 文件，Docker 镜像 tag 与之对应（`p0luz/ombre-brain:<VERSION>`）。
 
+## 2.17.11
+
+### 修复 / Fixed
+
+- `trace` 自动重打标不再把空响应、损坏 JSON 或缺字段响应静默降成
+  `未分类 / V0.5/A0.3 / importance5 / 空 tags`；这些情况现在分别以
+  `empty_response`、`invalid_json`、`invalid_schema` 明确失败并保持桶不变。
+- `trace` 重打标会安全返回诊断码；请求超时显示 `timeout`，服务商错误显示
+  `provider_error`，不回显上游响应正文或密钥。
+- SiliconFlow 自动打标请求启用 `response_format=json_object`，减少模型输出损坏 JSON；
+  Dashboard 的 SiliconFlow 预设更新为当前 `deepseek-ai/DeepSeek-V3.2`。
+- 自动打标 JSON 解析失败日志改为长度与 SHA-256 摘要，不再把可能源自私密记忆的模型输出写入日志。
+
+### 测试 / Tests
+
+- 新增空响应、非法 JSON、字段缺失、诊断码透传与 SiliconFlow JSON 模式回归测试。
+
+### 版本 / Version
+
+- 根目录 `VERSION` 与 `src/VERSION` 同步更新为 `2.17.11`。
+
 ## 2.17.10
 
 ### 修复 / Fixed

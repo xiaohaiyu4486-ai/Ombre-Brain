@@ -30,6 +30,7 @@ import re
 import json
 import asyncio
 import hashlib
+import math
 import sqlite3
 import weakref
 import logging
@@ -41,6 +42,7 @@ from utils import clean_llm_json, count_tokens_approx, parse_bool, positive_floa
 
 from ombrebrain.integrations.provider_detect import (
     is_gemini_native_host,
+    is_siliconflow_endpoint,
     strip_native_resource_prefix,
 )
 
@@ -119,6 +121,14 @@ _WHY_REMEMBERED_MAX_CHARS = 500
 _IMPORTANCE_MIN = 1
 _IMPORTANCE_MAX = 10
 _DEFAULT_IMPORTANCE = 5
+
+
+class AnalysisError(RuntimeError):
+    """Safe, machine-readable failure from the auto-tagging boundary."""
+
+    def __init__(self, diagnostic_code: str, message: str):
+        super().__init__(message)
+        self.diagnostic_code = diagnostic_code
 
 
 def chat_completion_token_limit(model: str, limit: int) -> dict[str, int]:
@@ -464,6 +474,7 @@ class Dehydrator:
         *,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        response_format: dict | None = None,
     ) -> str:
         """统一 chat 入口：对 429 / 5xx / 超时等瞬时错误做指数退避重试。
 
@@ -473,7 +484,11 @@ class Dehydrator:
         for attempt in range(_RETRY_MAX_ATTEMPTS):
             try:
                 return await self._chat_once(
-                    system, user, max_tokens=max_tokens, temperature=temperature
+                    system,
+                    user,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
                 )
             except Exception as e:
                 if not self._is_transient_error(e) or attempt == _RETRY_MAX_ATTEMPTS - 1:
@@ -496,6 +511,7 @@ class Dehydrator:
         *,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        response_format: dict | None = None,
     ) -> str:
         """统一的 OpenAI-compatible chat 调用。
 
@@ -523,6 +539,9 @@ class Dehydrator:
         # openai_compat (default)
         if self.client is None:
             return ""
+        response_options = {}
+        if response_format:
+            response_options["response_format"] = response_format
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -535,6 +554,7 @@ class Dehydrator:
                 self.model,
                 max_tokens if max_tokens is not None else self.max_tokens,
             ),
+            **response_options,
         )
         if not response.choices:
             return ""
@@ -907,10 +927,17 @@ class Dehydrator:
             if result:
                 return result
             raise RuntimeError("API 打标返回空结果")
-        except RuntimeError:
+        except AnalysisError:
             raise
         except Exception as e:
-            raise RuntimeError(f"API 打标失败，请检查 API 连接: {e}") from e
+            chain: list[BaseException] = []
+            current: BaseException | None = e
+            while current is not None and current not in chain:
+                chain.append(current)
+                current = current.__cause__ or current.__context__
+            if any("timeout" in type(item).__name__.lower() for item in chain):
+                raise AnalysisError("timeout", "API 打标请求超时") from e
+            raise AnalysisError("provider_error", "API 打标服务调用失败") from e
 
     # ---------------------------------------------------------
     # API call: auto-tagging
@@ -936,9 +963,15 @@ class Dehydrator:
             content[:_ANALYZE_INPUT_LIMIT],
             max_tokens=_ANALYZE_MAX_TOKENS,
             temperature=_DEFAULT_TEMPERATURE,
+            response_format=(
+                {"type": "json_object"}
+                if self.api_format == "openai_compat"
+                and is_siliconflow_endpoint(self.base_url)
+                else None
+            ),
         )
         if not raw.strip():
-            return self._default_analysis()
+            raise AnalysisError("empty_response", "自动打标模型返回空文本")
         return self._parse_analysis(raw)
 
     # ---------------------------------------------------------
@@ -955,21 +988,42 @@ class Dehydrator:
             cleaned = self._strip_md_fence(raw)
             result = json.loads(cleaned)
         except (json.JSONDecodeError, IndexError, ValueError):
-            logger.warning(f"API tagging JSON parse failed / JSON 解析失败: {raw[:_PARSE_ERR_PREVIEW]}")
-            return self._default_analysis()
+            digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:12]
+            logger.warning(
+                "API tagging JSON parse failed / JSON 解析失败: chars=%s sha256=%s",
+                len(raw),
+                digest,
+            )
+            raise AnalysisError("invalid_json", "自动打标模型返回无效 JSON")
 
         if not isinstance(result, dict):
-            return self._default_analysis()
+            raise AnalysisError("invalid_schema", "自动打标模型返回的 JSON 顶层不是对象")
+
+        raw_domains = result.get("domain")
+        raw_tags = result.get("tags")
+        if not isinstance(raw_domains, list) or not any(
+            isinstance(item, str) and item.strip() for item in raw_domains
+        ):
+            raise AnalysisError("invalid_schema", "自动打标结果缺少有效 domain")
+        if not isinstance(raw_tags, list) or not any(
+            isinstance(item, str) and item.strip() for item in raw_tags
+        ):
+            raise AnalysisError("invalid_schema", "自动打标结果缺少有效 tags")
+        try:
+            raw_valence = float(result["valence"])
+            raw_arousal = float(result["arousal"])
+            raw_importance = int(result["importance"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise AnalysisError(
+                "invalid_schema",
+                "自动打标结果缺少有效 valence/arousal/importance",
+            ) from exc
+        if not math.isfinite(raw_valence) or not math.isfinite(raw_arousal):
+            raise AnalysisError("invalid_schema", "自动打标情感坐标不是有限数值")
 
         # --- Validate and clamp value ranges / 校验并钳制数值范围 ---
         valence, arousal = self._clamp_va(result)
-        try:
-            importance = max(
-                _IMPORTANCE_MIN,
-                min(_IMPORTANCE_MAX, int(result.get("importance", _DEFAULT_IMPORTANCE))),
-            )
-        except (TypeError, ValueError, OverflowError):
-            importance = _DEFAULT_IMPORTANCE
+        importance = max(_IMPORTANCE_MIN, min(_IMPORTANCE_MAX, raw_importance))
         raw_why = result.get("why_remembered", "")
         why_remembered = (
             raw_why.strip()[:_WHY_REMEMBERED_MAX_CHARS]

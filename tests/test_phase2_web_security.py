@@ -513,12 +513,17 @@ async def test_openai_compat_passes_configured_extra_body(tmp_path):
         chat=SimpleNamespace(completions=Completions())
     )
     try:
-        result = await dehydrator._chat_once("system", "user")
+        result = await dehydrator._chat_once(
+            "system",
+            "user",
+            response_format={"type": "json_object"},
+        )
     finally:
         dehydrator.close()
 
     assert result == "OK"
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert captured["response_format"] == {"type": "json_object"}
 
 
 @pytest.mark.parametrize(

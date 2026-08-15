@@ -96,7 +96,7 @@ _IMPORT_ERROR_RULES = (
         "model_not_found",
         re.compile(r"model does not exist|model[_ ]?not[_ ]?found|模型不存在", re.I),
         "模型名称不可用",
-        "检查模型名是否包含服务商要求的完整前缀；例如硅基流动通常需要填写 deepseek-ai/DeepSeek-V3 这类完整名称。",
+        "检查模型名是否包含服务商要求的完整前缀；例如硅基流动通常需要填写 deepseek-ai/DeepSeek-V3.2 这类完整名称。",
     ),
     (
         "insufficient_balance",

@@ -12,7 +12,8 @@
 - `trace` 重打标会安全返回诊断码；请求超时显示 `timeout`，服务商错误显示
   `provider_error`，不回显上游响应正文或密钥。
 - SiliconFlow 自动打标请求启用 `response_format=json_object`，减少模型输出损坏 JSON；
-  Dashboard 的 SiliconFlow 预设更新为当前 `deepseek-ai/DeepSeek-V3.2`。
+  Dashboard 的 SiliconFlow 预设与 Render Blueprint 默认值均更新为当前
+  `deepseek-ai/DeepSeek-V3.2`。
 - 自动打标 JSON 解析失败日志改为长度与 SHA-256 摘要，不再把可能源自私密记忆的模型输出写入日志。
 
 ### 测试 / Tests

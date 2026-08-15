@@ -41,7 +41,7 @@ services:
       - key: OMBRE_COMPRESS_BASE_URL
         value: https://api.siliconflow.cn/v1
       - key: OMBRE_COMPRESS_MODEL
-        value: Qwen/Qwen2.5-7B-Instruct
+        value: deepseek-ai/DeepSeek-V3.2
       - key: OMBRE_COMPRESS_FORMAT
         value: openai_compat
       - key: OMBRE_BUCKETS_DIR

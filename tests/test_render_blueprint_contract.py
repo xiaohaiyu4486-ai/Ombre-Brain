@@ -34,7 +34,7 @@ def test_claude_blueprint_is_isolated_manual_and_provider_safe():
     )
     assert env["OMBRE_OWNER_NAME"]["value"] == "Claude"
     assert env["OMBRE_BREATH_RECENT_FIRST"]["value"] == "true"
-    assert env["OMBRE_COMPRESS_MODEL"]["value"] == "Qwen/Qwen2.5-7B-Instruct"
+    assert env["OMBRE_COMPRESS_MODEL"]["value"] == "deepseek-ai/DeepSeek-V3.2"
     assert env["OMBRE_EMBED_MODEL"]["value"] == "BAAI/bge-m3"
     assert env["OMBRE_COMPRESS_BASE_URL"]["value"] == (
         "https://api.siliconflow.cn/v1"

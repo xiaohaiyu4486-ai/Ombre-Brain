@@ -54,7 +54,7 @@ async def store_core(
         metadata_fallback = True
         rt.logger.warning(
             "hold metadata analysis failed; preserving raw content with local defaults / "
-            f"hold 打标失败，使用本地默认元数据并原样保存正文: {type(e).__name__}: {e}"
+            f"hold 打标失败，使用本地默认元数据并原样保存正文: err_type={type(e).__name__} detail=hidden"
         )
         default_analysis = getattr(rt.dehydrator, "_default_analysis", None)
         analysis = default_analysis() if callable(default_analysis) else {

@@ -29,6 +29,18 @@ class JsonRequest:
         return self._body
 
 
+def test_recent_first_compat_is_opt_in_via_environment(monkeypatch, tmp_path):
+    config_path = tmp_path / "missing-config.yaml"
+    monkeypatch.delenv("OMBRE_BREATH_RECENT_FIRST", raising=False)
+    assert load_config(str(config_path))["surfacing"]["recent_first"] is False
+
+    monkeypatch.setenv("OMBRE_BREATH_RECENT_FIRST", "true")
+    config = load_config(str(config_path))
+
+    assert config["surfacing"]["recent_first"] is True
+    assert config["surfacing"]["recent_floor_tokens"] == 6000
+
+
 @pytest.mark.asyncio
 async def test_env_config_can_clear_ai_display_name(monkeypatch, tmp_path):
     monkeypatch.setenv("AI_NAME", "trainsprout")

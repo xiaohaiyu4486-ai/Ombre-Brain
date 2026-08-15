@@ -82,6 +82,19 @@ def test_embedding_quick_save_submits_one_complete_provider_tuple():
     assert source.count("await _saveEnvKeys(") == 1
 
 
+def test_compression_quick_save_submits_one_complete_provider_tuple():
+    html = DASHBOARD.read_text(encoding="utf-8")
+    start = html.index("async function saveCompressKey()")
+    end = html.index("async function saveEmbedKey()", start)
+    source = html[start:end]
+
+    assert "'OMBRE_COMPRESS_API_KEY': key" in source
+    assert "'OMBRE_COMPRESS_BASE_URL':" in source
+    assert "'OMBRE_COMPRESS_MODEL':" in source
+    assert "'OMBRE_COMPRESS_FORMAT':" in source
+    assert source.count("await _saveEnvKeys(") == 1
+
+
 def test_embedding_migration_submits_current_provider_tuple():
     html = DASHBOARD.read_text(encoding="utf-8")
     start = html.index("var migrationPayload = {")

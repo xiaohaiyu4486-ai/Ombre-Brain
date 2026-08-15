@@ -35,6 +35,7 @@
 - `OMBRE_TRANSPORT`：`stdio` 或 `streamable-http`（legacy SSE 传输已于 2026-08-09 下线）。
 - `OMBRE_PORT`：容器或裸机监听端口。
 - `OMBRE_BIND_HOST`：进程实际监听地址；容器/PaaS 通常需要 `0.0.0.0`，裸机仅限本机访问时应设为 `127.0.0.1`。
+- `OMBRE_PUBLIC_URL`：反向代理后的公开 HTTPS origin，用于稳定绑定 OAuth issuer/resource；例如 `https://ob.example.com`。
 - `OMBRE_MCP_REQUIRE_AUTH`：是否要求 MCP 鉴权。
 - `OMBRE_MCP_AUTH_MODE`：`oauth`、`token` 或 `hybrid`。`hybrid` 保留 OAuth 动态注册，同时让 `Authorization: Bearer` 也接受预置静态 Token；关闭鉴权仍由 `OMBRE_MCP_REQUIRE_AUTH=false` 控制。
 - `OMBRE_MCP_TOKEN`：静态 Token / OAuth + 静态 Token 共存模式的预置密钥。
@@ -73,6 +74,7 @@
 - `OMBRE_CONTAINER_NAME`：目标容器名。
 - `OMBRE_OWNER_NAME`：当前所有者名。
 - `OMBRE_OWNER_COUNT`：多所有者实例数。
+- `OMBRE_BREATH_RECENT_FIRST`：启用“核心准则 + 最新完整记忆”的确定性兼容浮现；默认关闭。
 - `OMBRE_MING_VAULT_DIR`、`OMBRE_HONG_VAULT_DIR`：示例多所有者数据目录。
 - `OMBRE_MING_PASSWORD`、`OMBRE_HONG_PASSWORD`：示例多所有者密码。
 - `OMBRE_MING_MCP_TOKEN`、`OMBRE_HONG_MCP_TOKEN`：多所有者 Compose 中每个实例各自的静态 MCP Token；不要让多个 owner 共用同一密钥。

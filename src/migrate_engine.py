@@ -1346,6 +1346,17 @@ class MigrateEngine:
             os.path.normcase(os.path.abspath(existing_path))
             == os.path.normcase(os.path.abspath(target_path))
         )
+        if not same_target and os.path.exists(target_path):
+            try:
+                # posixpath.normcase is intentionally a no-op, even on the
+                # default case-insensitive macOS filesystem.  The imported
+                # metadata may normalize only filename casing (Memory_ vs
+                # memory_), which is still the same inode and must use the
+                # in-place overwrite transaction rather than look like an
+                # unrelated collision.
+                same_target = os.path.samefile(existing_path, target_path)
+            except OSError:
+                pass
         try:
             if not same_target and os.path.exists(target_path):
                 raise FileExistsError(f"恢复目标已存在: {target_path}")

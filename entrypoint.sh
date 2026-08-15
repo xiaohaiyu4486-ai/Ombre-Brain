@@ -239,7 +239,10 @@ _bootstrap_code() {
     fi
 
     if [ -n "$RESEED_REASON" ]; then
-        echo "[entrypoint] code-state=reseed reason=$RESEED_CODE: 播种代码到持久卷 $CODE_DIR：$RESEED_REASON"
+        # macOS /bin/sh's legacy echo can corrupt the leading byte of the
+        # full-width colon after an expanded path. printf is POSIX and keeps
+        # diagnostics valid UTF-8 for subprocess/log collectors.
+        printf '%s\n' "[entrypoint] code-state=reseed reason=${RESEED_CODE}: 播种代码到持久卷 ${CODE_DIR}：${RESEED_REASON}"
         _seed_image_code || return 1
         _write_marker "$CODE_DIR/.seeded_image_version" "$IMG_VER" || return 1
         [ -z "$IMG_FP" ] || _write_marker "$CODE_DIR/.seeded_image_fingerprint" "$IMG_FP" || return 1

@@ -427,6 +427,59 @@ async def test_default_surface_skips_ordinary_results_when_core_is_omitted(monke
 
 
 @pytest.mark.asyncio
+async def test_recent_first_compat_keeps_newest_memory_when_core_is_omitted():
+    oversized_core = {
+        "id": "oversized-core",
+        "content": "Core rule " * 400,
+        "metadata": {
+            "type": "permanent",
+            "importance": 10,
+            "pinned": True,
+            "domain": [],
+        },
+    }
+    older = {
+        "id": "older-memory",
+        "content": "Older memory must not displace the latest one.",
+        "metadata": {
+            "type": "dynamic",
+            "importance": 10,
+            "created": "2026-08-14T10:00:00",
+            "domain": [],
+        },
+    }
+    newest = {
+        "id": "newest-memory",
+        "content": "Newest complete memory survives the crowded core budget. " * 80,
+        "metadata": {
+            "type": "dynamic",
+            "importance": 1,
+            "created": "2026-08-15T10:00:00",
+            "domain": [],
+        },
+    }
+    _install_runtime(OrderedBucketManager([oversized_core, older, newest]))
+    rt.config["surfacing"].update({
+        "recent_first": True,
+        "recent_floor_tokens": 1,
+    })
+
+    output = await surface_default(
+        max_results=2,
+        max_tokens=1,
+        tag_filter=[],
+    )
+
+    assert "=== 最近记忆 ===" in output
+    assert "[bucket_id:newest-memory]" in output
+    assert newest["content"] in output
+    assert "[bucket_id:older-memory]" not in output
+    assert "[bucket_id:oversized-core]" not in output
+    assert "最近记忆仍按兼容保底返回" in output
+    assert "普通浮现已跳过" not in output
+
+
+@pytest.mark.asyncio
 async def test_default_surface_reports_hard_cap_when_pins_exceed_40000():
     oversized_core = {
         "id": "hard-cap-core",

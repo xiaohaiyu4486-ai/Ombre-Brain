@@ -570,66 +570,27 @@ async def test_openai_compat_uses_model_specific_completion_limit(
     assert other_limit_key not in captured
 
 
-@pytest.mark.parametrize(
-    ("model", "expected_limit_key"),
-    [
-        ("azure/gpt-5.1", "max_completion_tokens"),
-        ("gpt-4o-mini", "max_tokens"),
-    ],
-)
 @pytest.mark.asyncio
-async def test_dehydration_probe_uses_model_specific_completion_limit(
-    monkeypatch,
-    model,
-    expected_limit_key,
-):
+async def test_dehydration_probe_uses_live_structured_analysis(monkeypatch):
     calls = []
 
-    class Response:
-        status_code = 200
+    class Dehydrator:
+        api_available = True
 
-    class Client:
-        def __init__(self, *args, **kwargs):
-            pass
+        async def analyze(self, content):
+            calls.append(content)
+            return {"tags": ["probe"], "suggested_name": "连通性"}
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return False
-
-        async def post(self, url, **kwargs):
-            calls.append((url, kwargs))
-            return Response()
-
-    monkeypatch.setattr(httpx, "AsyncClient", Client)
     monkeypatch.setattr(config_api_web.sh, "_require_auth", lambda _request: None)
-    monkeypatch.setattr(
-        config_api_web.sh,
-        "config",
-        {
-            "dehydration": {
-                "api_key": "probe-key",
-                "base_url": "https://provider.example/v1",
-                "model": model,
-            }
-        },
-    )
+    monkeypatch.setattr(config_api_web.sh, "dehydrator", Dehydrator())
     mcp = FakeMCP()
     config_api_web.register(mcp)
 
     response = await mcp.routes[("POST", "/api/test/dehydration")](object())
 
-    other_limit_key = (
-        "max_tokens"
-        if expected_limit_key == "max_completion_tokens"
-        else "max_completion_tokens"
-    )
     assert response.status_code == 200
-    [(url, kwargs)] = calls
-    assert url == "https://provider.example/v1/chat/completions"
-    assert kwargs["json"][expected_limit_key] == 5
-    assert other_limit_key not in kwargs["json"]
+    assert len(calls) == 1
+    assert "连通性测试" in calls[0]
 
 
 @pytest.mark.asyncio

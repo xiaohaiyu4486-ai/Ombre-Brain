@@ -7592,7 +7592,15 @@ function safeNumber(value, fallback, minValue, maxValue) {
 async function saveCompressKey() {
   var key = (document.getElementById('cfg-dehy-key').value || '').trim();
   if (!key) { var m = document.getElementById('dehy-key-msg'); if (m) m.textContent = '请输入 Key'; return; }
-  var updates = { 'OMBRE_COMPRESS_API_KEY': key };
+  // Provider identity is one tuple.  Publishing only a new key can leave the
+  // runtime using the previous provider's URL/model and make the quick probe
+  // disagree with the real hold path.
+  var updates = {
+    'OMBRE_COMPRESS_API_KEY': key,
+    'OMBRE_COMPRESS_BASE_URL': (document.getElementById('cfg-dehy-url').value || '').trim(),
+    'OMBRE_COMPRESS_MODEL': (document.getElementById('cfg-dehy-model').value || '').trim(),
+    'OMBRE_COMPRESS_FORMAT': (document.getElementById('cfg-dehy-format') || {value:'openai_compat'}).value || 'openai_compat'
+  };
   document.getElementById('cfg-dehy-key').value = '';
   await _saveEnvKeys(updates, 'dehy-key-msg');
 }

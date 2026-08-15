@@ -40,11 +40,6 @@ from ombrebrain.security.public_origin import configured_public_origin
 from . import _shared as sh
 
 try:
-    from dehydrator import chat_completion_token_limit
-except ImportError:  # pragma: no cover
-    from ..dehydrator import chat_completion_token_limit
-
-try:
     from utils import (  # type: ignore
         get_ai_name as _get_ai_name,
         get_owner_name as _get_owner_name,
@@ -953,34 +948,34 @@ def register(mcp) -> None:
         err = sh._require_auth(request)
         if err:
             return err
-        # Use current runtime config (api_key may have been updated in-memory)
-        dehyd = sh.config.get("dehydration", {})
-        model = dehyd.get("model", "")
-        base_url = dehyd.get("base_url", "")
-        api_key = dehyd.get("api_key", "")
-        if not api_key:
+        # Exercise the same live client and structured-output path used by
+        # hold.  A tiny raw HTTP request can be green even when the runtime has
+        # a mixed provider tuple or the model cannot return parseable tagging.
+        dehyd = sh.dehydrator
+        if dehyd is None or not getattr(dehyd, "api_available", False):
             return JSONResponse({"ok": False, "error": "未设置 API Key"}, status_code=400)
         try:
-            import httpx as _httpx
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": "hi"}],
-                **chat_completion_token_limit(model, 5),
-            }
-            async with _httpx.AsyncClient(timeout=15) as client:
-                r = await client.post(f"{base_url.rstrip('/')}/chat/completions", json=payload, headers=headers)
-            if r.status_code in (200, 201):
-                return JSONResponse({"ok": True, "message": "API Key 有效 ✓"})
-            else:
-                try:
-                    detail = r.json().get("error", {})
-                    msg = detail.get("message", r.text[:200]) if isinstance(detail, dict) else str(detail)[:200]
-                except Exception:
-                    msg = r.text[:200]
-                return JSONResponse({"ok": False, "error": f"HTTP {r.status_code}: {msg}"})
+            analysis = await dehyd.analyze(
+                "连通性测试：今天完成了独立记忆系统配置，心情平静。"
+            )
+            if not isinstance(analysis, dict) or not (
+                analysis.get("tags") or analysis.get("suggested_name")
+            ):
+                return JSONResponse({
+                    "ok": False,
+                    "error": "模型已连接，但未返回可解析的自动打标 JSON；请更换兼容模型后重试。",
+                })
+            return JSONResponse({"ok": True, "message": "连接及自动打标均正常 ✓"})
         except Exception as e:
-            return JSONResponse({"ok": False, "error": str(e)[:300]})
+            # Keep diagnostics useful without reflecting the configured secret.
+            message = str(e)
+            api_key = str(getattr(dehyd, "api_key", "") or "")
+            if api_key:
+                message = message.replace(api_key, "***")
+            return JSONResponse({
+                "ok": False,
+                "error": f"{type(e).__name__}: {message}"[:300],
+            })
 
 
     # =============================================================

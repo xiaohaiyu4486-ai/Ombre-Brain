@@ -51,6 +51,10 @@ _PIN_BUDGET_NOTICE = (
     "token 预算不足：核心准则 required≈{required} tokens（完整渲染核心准则总计），"
     "limit={limit} tokens，omitted={omitted} 条；普通浮现已跳过（ordinary surfacing skipped）。"
 )
+_PIN_BUDGET_RECENT_NOTICE = (
+    "token 预算不足：核心准则 required≈{required} tokens（完整渲染核心准则总计），"
+    "limit={limit} tokens，omitted={omitted} 条；最近记忆仍按兼容保底返回。"
+)
 
 
 def _bucket_has_tags(meta: dict, tag_filter: list) -> bool:
@@ -68,8 +72,11 @@ def _budget_notice(*, omitted: int, used: int, limit: int) -> str:
     return _BUDGET_NOTICE.format(omitted=omitted, used=used, limit=limit)
 
 
-def _pin_budget_notice(*, required: int, limit: int, omitted: int) -> str:
-    notice = _PIN_BUDGET_NOTICE.format(
+def _pin_budget_notice(
+    *, required: int, limit: int, omitted: int, ordinary_skipped: bool = True
+) -> str:
+    template = _PIN_BUDGET_NOTICE if ordinary_skipped else _PIN_BUDGET_RECENT_NOTICE
+    notice = template.format(
         required=required,
         limit=limit,
         omitted=omitted,
@@ -91,6 +98,16 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
         return "记忆系统暂时无法访问。"
 
     surfacing_cfg = rt.config.get("surfacing", {}) or {}
+    recent_first = parse_bool(
+        surfacing_cfg.get("recent_first", False), default=False
+    )
+    try:
+        recent_floor_tokens = int(
+            surfacing_cfg.get("recent_floor_tokens", 6000) or 6000
+        )
+    except (TypeError, ValueError, OverflowError):
+        recent_floor_tokens = 6000
+    recent_floor_tokens = max(0, min(recent_floor_tokens, _BREATH_SAFETY_CAP))
     try:
         footprint_snapshot = rt.bucket_mgr.footprint_snapshot()
     except Exception as exc:
@@ -255,20 +272,49 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
             random.shuffle(pool)
             non_cold = top1 + pool + non_cold[min(20, len(non_cold)):]
         candidates = cold_start + non_cold
+    if recent_first:
+        # Claude legacy contract: deterministic newest-first recall.  Keep all
+        # current visibility/policy filters, but replace weighted/random order.
+        def _recent_key(bucket: dict):
+            meta = bucket.get("metadata", {}) or {}
+            raw = meta.get("created") or meta.get("last_active") or ""
+            try:
+                timestamp = parse_iso_datetime(raw).timestamp()
+            except (ValueError, TypeError, OverflowError):
+                timestamp = 0.0
+            return (timestamp, str(bucket.get("id") or ""))
+
+        candidates = sorted(unresolved, key=_recent_key, reverse=True)
     candidates = candidates[:max_results]
 
     dynamic_results = []
     dynamic_omitted = 0
-    if not pinned_omitted:
+    if recent_first:
+        # Core rules may consume their normal budget, but they must never make
+        # the newest memory disappear completely.  This mirrors the old vault's
+        # 6000-token recent floor while preserving every returned body verbatim.
+        token_budget = max(token_budget, recent_floor_tokens)
+    if not pinned_omitted or recent_first:
         for b in candidates:
             try:
                 score = rt.decay_engine.calculate_score(b["metadata"])
+                if recent_first:
+                    created = str(
+                        b["metadata"].get("created")
+                        or b["metadata"].get("last_active")
+                        or ""
+                    )[:19]
+                    header = f"[最近:{created}] [bucket_id:{b['id']}]"
+                else:
+                    header = f"[权重:{score:.2f}] [bucket_id:{b['id']}]"
                 rendered, entry_tokens = render_stored_bucket(
                     b,
-                    f"[权重:{score:.2f}] [bucket_id:{b['id']}]",
+                    header,
                     _footprint(b),
                 )
-                if entry_tokens > token_budget:
+                if entry_tokens > token_budget and not (
+                    recent_first and not dynamic_results
+                ):
                     dynamic_omitted += 1
                     continue
                 dynamic_results.append(rendered)
@@ -283,6 +329,7 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
                 required=pinned_required_tokens,
                 limit=max_tokens,
                 omitted=pinned_omitted,
+                ordinary_skipped=not recent_first,
             )
         if dynamic_omitted:
             return _budget_notice(
@@ -331,7 +378,12 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
                     cond_b = False
             if cond_a or cond_b:
                 passive_pool.append(b)
-        if passive_pool and not pinned_omitted and not dynamic_omitted:
+        if (
+            passive_pool
+            and not recent_first
+            and not pinned_omitted
+            and not dynamic_omitted
+        ):
             random.shuffle(passive_pool)
             for b in passive_pool[:2]:
                 try:
@@ -353,7 +405,12 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
     # 设计意图：让已解决的记忆有小概率重新出现，制造"忽然想起"的温度。
     # 与无结果兜底逻辑并存；不替换主流程。
     dream_results: list[str] = []
-    if not pinned_omitted and not dynamic_omitted and random.random() < 0.03:
+    if (
+        not recent_first
+        and not pinned_omitted
+        and not dynamic_omitted
+        and random.random() < 0.03
+    ):
         try:
             shown_ids = {b["id"] for b in candidates}
             resolved_pool = [
@@ -393,7 +450,8 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
     if pinned_results:
         parts.append("=== 核心准则 ===\n" + "\n---\n".join(pinned_results))
     if dynamic_results:
-        parts.append("=== 浮现记忆 ===\n" + "\n---\n".join(dynamic_results))
+        heading = "=== 最近记忆 ===" if recent_first else "=== 浮现记忆 ==="
+        parts.append(heading + "\n" + "\n---\n".join(dynamic_results))
     if passive_results:
         parts.append("=== 久未浮现 ===\n" + "\n---\n".join(passive_results))
     if dream_results:
@@ -404,6 +462,7 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
                 required=pinned_required_tokens,
                 limit=max_tokens,
                 omitted=pinned_omitted,
+                ordinary_skipped=not recent_first,
             )
         )
     if dynamic_omitted:

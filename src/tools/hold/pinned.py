@@ -43,7 +43,10 @@ async def store_pinned(
     try:
         analysis = await rt.dehydrator.analyze(content)
     except Exception as e:
-        rt.logger.warning(f"Auto-tagging failed, using defaults / 自动打标失败: {e}")
+        rt.logger.warning(
+            "Auto-tagging failed, using defaults / 自动打标失败，使用默认值: "
+            f"err_type={type(e).__name__} detail=hidden"
+        )
         analysis = {
             "domain": ["未分类"], "valence": 0.5, "arousal": 0.3,
             "tags": [], "suggested_name": "",

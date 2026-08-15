@@ -33,9 +33,9 @@ import uuid
 from utils import normalize_memory_title
 
 try:
-    from errors import llm_step_failed_error, safe_error_detail
+    from errors import safe_error_detail
 except ImportError:  # pragma: no cover - 包内导入兜底
-    from ...errors import llm_step_failed_error, safe_error_detail  # type: ignore
+    from ...errors import safe_error_detail  # type: ignore
 
 from .. import _runtime as rt
 from .._common import (
@@ -55,13 +55,23 @@ async def grow_core(content: str, test_data: bool = False) -> str:
             "Diary digest failed / 日记整理失败: err_type=%s detail=hidden",
             type(e).__name__,
         )
-        raise llm_step_failed_error(
-            "日记拆分",
-            api_available=getattr(rt.dehydrator, "api_available", True),
-        ) from e
+        items = []
 
     if not isinstance(items, list) or not items:
-        return "内容为空或整理失败。"
+        # Never refuse source text because a derived digest failed.  Reuse the
+        # verbatim items path so metadata can still be attempted, while both a
+        # provider outage and an empty/invalid model response fall back to one
+        # raw bucket with local neutral metadata.
+        rt.logger.warning(
+            "Diary digest unavailable; preserving the complete source as one "
+            "verbatim bucket / 日记整理不可用，整段原文按单桶逐字保存"
+        )
+        result = await grow_items(
+            [{"content": content}],
+            source_content="",
+            test_data=test_data,
+        )
+        return "整理服务暂不可用，已安全降级为单桶原文。\n" + result
     payload_err = check_grow_items_payload(items)
     if payload_err:
         rt.logger.warning(f"grow digest output rejected: {payload_err}")
@@ -223,7 +233,7 @@ async def grow_items(items: list, source_content: str = "", test_data: bool = Fa
                     rt.logger.warning(
                         "grow items metadata analysis failed; preserving raw content with local defaults / "
                         "grow items 打标失败，使用本地默认元数据并原样保存正文: "
-                        f"{type(e).__name__}: {e}"
+                        f"err_type={type(e).__name__} detail=hidden"
                     )
             explicit_title = normalize_memory_title(item.get("title"))
             explicit_tags = item.get("tags")
@@ -279,7 +289,10 @@ async def grow_items(items: list, source_content: str = "", test_data: bool = Fa
                 test_data=test_data,
             )
         except Exception as e:
-            rt.logger.warning(f"grow items 条目处理失败 / verbatim item failed: {e}")
+            rt.logger.warning(
+                "grow items 条目处理失败 / verbatim item failed: "
+                f"err_type={type(e).__name__} detail=hidden"
+            )
             return {"line": "⚠️"}
         return {
             "line": f"📎{result_name}" if is_merged else f"📝{result_name}",

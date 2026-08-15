@@ -444,6 +444,12 @@ def load_config(config_path: Optional[str] = None) -> dict:
         "storage": {
             "external_change_poll_seconds": 1.0,
         },
+        "surfacing": {
+            # Opt-in compatibility for vaults whose established session-start
+            # contract is "core rules + newest complete memories".
+            "recent_first": False,
+            "recent_floor_tokens": 6000,
+        },
         "embedding": {
             "enabled": True,
             "background_indexing": True,
@@ -529,6 +535,16 @@ def load_config(config_path: Optional[str] = None) -> dict:
     _apply_env_override(config, "OMBRE_EMBED_FORMAT", "embedding", "api_format")
     _apply_env_float_override(config, "OMBRE_EMBED_TIMEOUT_SECONDS", "embedding", "timeout_seconds")
 
+    # Claude legacy surfacing compatibility.  It is opt-in so a normal upstream
+    # deployment keeps weighted surfacing unchanged.
+    _env_recent_first = os.environ.get("OMBRE_BREATH_RECENT_FIRST", "").strip()
+    if _env_recent_first:
+        surfacing = config.setdefault("surfacing", {})
+        surfacing["recent_first"] = parse_bool(
+            _env_recent_first,
+            default=parse_bool(surfacing.get("recent_first", False), default=False),
+        )
+
     # Obsidian / Git / manual Markdown edits cache poll interval.
     _apply_env_float_override(
         config,
@@ -539,6 +555,9 @@ def load_config(config_path: Optional[str] = None) -> dict:
 
     # 顶层运行时
     _apply_env_override(config, "OMBRE_TRANSPORT", "transport")
+    # Reverse proxies expose HTTPS publicly while the app sees internal HTTP.
+    # Bind OAuth issuer/resource metadata to the explicit external origin.
+    _apply_env_override(config, "OMBRE_PUBLIC_URL", "deployment", "public_url")
     # transport 名归一化 —— 单一真源，让 server.py / 诊断接口拿到的都是规范值。
     # 背景：远程接入（Operit / 安卓 / 自建前端等）该填 "streamable-http"，但很多人凭
     # 直觉写成 "http" / "streamable_http" / "streamablehttp" 等变体；server.py 的入口用

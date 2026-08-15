@@ -15,9 +15,9 @@ import pytest
 import tools._runtime as rt
 from tools.grow import dispatch
 from tools.grow.core import grow_core, grow_items
+from tools.grow.shortpath import grow_shortpath
 from tools.trace.core import trace_core
 from tools.source_read import dispatch as source_read
-from errors import PublicToolError
 from ombrebrain.storage.source_store import SourceStore
 
 
@@ -616,16 +616,20 @@ async def test_aligned_multi_event_source_ranges_round_trip(grow_rt):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_without_items_unchanged(grow_rt):
-    # 不传 items：长文仍走 digest 路径（stub.digest 会炸，grow_core 包成 RuntimeError）
-    # → 证明默认路径没变、digest 仍在原路径被调用
-    with pytest.raises(RuntimeError):
-        await dispatch(content="这是一段超过三十个字的长文本内容需要走 digest 拆分路径来验证向后兼容性没有被破坏")
+async def test_dispatch_without_items_falls_back_to_one_verbatim_bucket(grow_rt):
+    bucket_mgr, _stub = grow_rt
+    original = "这是一段超过三十个字的长文本内容需要走 digest 拆分路径，并在失败时逐字保存为一条记忆。"
+
+    output = await dispatch(content=original)
+
+    assert "已安全降级为单桶原文" in output
+    buckets = await bucket_mgr.list_all(include_archive=False)
+    assert [bucket["content"] for bucket in buckets] == [original]
 
 
 @pytest.mark.asyncio
 async def test_grow_digest_failure_hides_provider_detail(grow_rt):
-    _bucket_mgr, _stub = grow_rt
+    bucket_mgr, _stub = grow_rt
     provider_secret = "sk-provider-secret https://provider.invalid/private"
 
     class FailingDehydrator:
@@ -635,32 +639,27 @@ async def test_grow_digest_failure_hides_provider_detail(grow_rt):
             raise RuntimeError(provider_secret)
 
     rt.dehydrator = FailingDehydrator()
+    original = "这是一段需要调用摘要服务的长内容，长度足够进入 grow 的日记拆分主路径。"
 
-    with pytest.raises(PublicToolError) as caught:
-        await grow_core("这是一段需要调用摘要服务的长内容，长度足够进入 grow 的日记拆分主路径。")
+    output = await grow_core(original)
 
-    # key 可用时不许甩锅给 key：这条路径上绝大多数失败（供应商 5xx、超时、模型
-    # 返回空）都与 key 无关，指向 OMBRE_COMPRESS_API_KEY 会把排查方向带偏。
-    assert "OMBRE_COMPRESS_API_KEY" not in caught.value.public_message
-    assert "日记拆分" in caught.value.public_message
-    assert "桶未创建" in caught.value.public_message
-    # 也不许反过来打包票说 key 没问题：api_available 只知道「配没配」，
-    # key 填错/过期/欠费时它仍是 True，调用照样 401。
-    assert "key 配置正常" not in caught.value.public_message
-    # 供应商正文一律不得进入公开文案或日志
-    assert provider_secret not in caught.value.public_message
-    assert provider_secret not in str(caught.value)
+    assert "已安全降级为单桶原文" in output
+    assert provider_secret not in output
+    buckets = await bucket_mgr.list_all(include_archive=False)
+    assert [bucket["content"] for bucket in buckets] == [original]
     rendered_logs = "\n".join(
-        str(call) for call in rt.logger.error.call_args_list
+        str(call)
+        for call in (
+            rt.logger.error.call_args_list + rt.logger.warning.call_args_list
+        )
     )
     assert "RuntimeError" in rendered_logs
     assert provider_secret not in rendered_logs
 
 
 @pytest.mark.asyncio
-async def test_grow_digest_blames_key_only_when_api_unavailable(grow_rt):
-    """只有 API 真的没配好时，才允许把人指向 OMBRE_COMPRESS_API_KEY。"""
-    _bucket_mgr, _stub = grow_rt
+async def test_grow_digest_without_api_still_preserves_raw_body(grow_rt):
+    bucket_mgr, _stub = grow_rt
 
     class UnconfiguredDehydrator:
         api_available = False
@@ -669,9 +668,29 @@ async def test_grow_digest_blames_key_only_when_api_unavailable(grow_rt):
             raise RuntimeError("脱水 API 不可用，请检查 config.yaml 中的 dehydration 配置")
 
     rt.dehydrator = UnconfiguredDehydrator()
+    original = "这是一段需要调用摘要服务的长内容，即使没有 API Key 也必须保存正文。"
 
-    with pytest.raises(PublicToolError) as caught:
-        await grow_core("这是一段需要调用摘要服务的长内容，长度足够进入 grow 的日记拆分主路径。")
+    output = await grow_core(original)
 
-    assert "OMBRE_COMPRESS_API_KEY" in caught.value.public_message
-    assert "桶未创建" in caught.value.public_message
+    assert "已安全降级为单桶原文" in output
+    buckets = await bucket_mgr.list_all(include_archive=False)
+    assert [bucket["content"] for bucket in buckets] == [original]
+
+
+@pytest.mark.asyncio
+async def test_grow_short_analysis_failure_preserves_verbatim_body(grow_rt):
+    bucket_mgr, _stub = grow_rt
+
+    class FailingDehydrator:
+        async def analyze(self, _content, *, include_why=False):
+            raise RuntimeError("private-provider-detail")
+
+    rt.dehydrator = FailingDehydrator()
+    original = "短记忆也不能拒存。"
+
+    output = await grow_shortpath(original)
+
+    assert "正文已逐字保存" in output
+    assert "private-provider-detail" not in output
+    buckets = await bucket_mgr.list_all(include_archive=False)
+    assert [bucket["content"] for bucket in buckets] == [original]

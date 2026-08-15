@@ -105,6 +105,7 @@
 | 我已经消化完，不想让它被动浮现 | `trace(id, digested=1)` — 从无参 breath、被动联想和 dream 隐藏；显式 query 真命中及 importance/catalog 审计仍可找回 |
 | 我想让它彻底安静下去 | `trace(id, dont_surface=1)` — 不再出现在无参 breath，关键词搜还能找到 |
 | 我对当时的判断改主意了 | `trace(id, valence=0.7, arousal=0.4)` — 改情感坐标 |
+| 迁移后的桶仍是中性默认元数据 | `trace(id, reclassify=True)` — 用当前打标模型重跑 domain/tags/valence/arousal/importance；正文和标题不动，必须单独调用 |
 | 局部内容写错了 | `trace(id, old_str="逐字且唯一的原文片段", new_str="修正片段")` — 原子局部替换并重建 embedding；`new_str=""` 可删除片段 |
 | 整段正文都要重写 | `trace(id, content="完整新版本")` — 完整替换正文并重建 embedding，不能与 `old_str/new_str` 同传 |
 | 放入删除档案 | `trace(id, delete=True)` — 从日常召回中隐藏并清理 embedding；Markdown 仍保留在 `archive/` |

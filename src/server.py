@@ -357,6 +357,12 @@ mcp = FastMCP(
     stateless_http=True,
     lifespan=_stdio_lifespan if config.get("transport", "stdio") == "stdio" else None,
 )
+# FastMCP 1.29 does not expose a public constructor argument for the
+# application version.  Without this assignment initialize.serverInfo.version
+# falls back to the MCP SDK version, which made production report OB as 1.29.0
+# even though the running application was 2.17.9.
+if getattr(mcp, "_mcp_server", None) is not None:
+    mcp._mcp_server.version = __version__
 
 
 # =============================================================
@@ -911,6 +917,7 @@ async def trace(
     deletion_request_id: Optional[str] = "",
     deletion_decision: Optional[str] = "",
     deletion_ai_reason: Optional[str] = "",
+    reclassify: Optional[bool] = False,
 ) -> str:
     """仅在明确需要修改某条已存在记忆时调用，不要猜测 bucket_id 或自行改写记忆。
 
@@ -923,6 +930,9 @@ async def trace(
     old_str/new_str 会在完整原文中做唯一、逐字的局部替换（new_str 可为空以删除），
     两种方式都会重建 embedding，且不能同时使用。status/weight 用于 plan；dont_surface 控制日常浮现；
     why_remembered、meaning_append/replace、media_append/replace 更新相应元数据。
+    reclassify=True 必须单独调用：按当前打标模型为指定 bucket 重新生成
+    domain/tags/valence/arousal/importance，正文与标题保持逐字不变；适合迁移后
+    精确回填旧的中性默认元数据。pinned/protected 桶的 importance 仍锁定为 10。
 
     删除边界：delete=True 只会把 Markdown 移入 archive 并标记 deleted_at，不会
     物理抹除。hard_delete=True 仅用于清理创建时明确标记 test_data=True 的测试桶，
@@ -955,6 +965,7 @@ async def trace(
             hard_delete=hard_delete, delete_reason=delete_reason,
             restore=restore,
             old_str=old_str, new_str=new_str,
+            reclassify=reclassify,
         ),
         op="trace",
         args={
@@ -968,6 +979,7 @@ async def trace(
             "delete_reason_len": len(str(delete_reason or "")),
             "old_str_len": len(str(old_str or "")),
             "new_str_len": len(str(new_str or "")) if new_str is not None else 0,
+            "reclassify": reclassify,
             "weight": weight, "dont_surface": dont_surface,
             "why_len": len(why_remembered or ""),
             "meaning_append_len": len(meaning_append or ""),

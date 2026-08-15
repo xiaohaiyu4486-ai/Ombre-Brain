@@ -32,6 +32,7 @@ trace 是 OB 唯一的「写元数据」入口，承接所有桶字段更新和�
 
 import math
 from contextlib import AsyncExitStack
+from collections.abc import Mapping
 from typing import Optional
 
 from ombrebrain.domain.memory_messages import resolved_hint
@@ -74,6 +75,7 @@ async def trace_core(
     restore: Optional[bool] = False,
     old_str: Optional[str] = "",
     new_str: Optional[str] = None,
+    reclassify: Optional[bool] = False,
 ) -> str:
     bucket_id = "" if bucket_id is None else str(bucket_id)
     if name is None:
@@ -125,6 +127,7 @@ async def trace_core(
     delete = parse_bool(delete, default=False)
     hard_delete = parse_bool(hard_delete, default=False)
     restore = parse_bool(restore, default=False)
+    reclassify = parse_bool(reclassify, default=False)
     delete_reason = "" if delete_reason is None else str(delete_reason).strip()
 
     def _finite_float(value, default: float) -> float:
@@ -182,6 +185,7 @@ async def trace_core(
         "delete": delete,
         "hard_delete": hard_delete,
         "restore": restore,
+        "reclassify": reclassify,
         "delete_reason_length": len(delete_reason),
         "old_str_length": len(old_str),
         "new_str_length": len(new_str) if new_str_provided else 0,
@@ -193,6 +197,39 @@ async def trace_core(
 
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
+
+    reclassify_conflicts = any((
+        bool(name),
+        bool(domain),
+        valence != -1,
+        arousal != -1,
+        importance != -1,
+        bool(tags),
+        resolved != -1,
+        pinned != -1,
+        protected != -1,
+        digested != -1,
+        bool(content),
+        delete,
+        bool(status),
+        weight != -1,
+        dont_surface != -1,
+        bool(why_remembered),
+        bool(meaning_append),
+        meaning_replace is not None,
+        bool(media_append),
+        media_replace is not None,
+        hard_delete,
+        bool(delete_reason),
+        restore,
+        bool(old_str),
+        new_str_provided,
+    ))
+    if reclassify and reclassify_conflicts:
+        return (
+            "参数冲突：reclassify=True 必须单独调用，不能同时修改正文、标题、"
+            "元数据或生命周期；本次未修改。"
+        )
 
     if restore or delete or hard_delete:
         guarded_reader = (
@@ -444,6 +481,104 @@ async def trace_core(
     )
     if logical_letter and letter_lock_state(bucket, "ai")["locked"]:
         return "这封信尚未向你开放；请使用 Letter 专用入口管理锁状态。"
+
+    if reclassify:
+        original_content = str(bucket.get("content") or "")
+        if not original_content.strip():
+            return f"记忆桶正文为空，无法重新打标: {bucket_id}"
+        try:
+            analysis = await rt.dehydrator.analyze(original_content)
+        except Exception as exc:
+            rt.logger.warning(
+                "trace reclassify analysis failed; bucket unchanged / "
+                "trace 重打标失败，记忆桶保持不变: "
+                f"bucket_id={bucket_id} err_type={type(exc).__name__} detail=hidden"
+            )
+            return "自动重打标失败；正文与元数据均未修改，请检查打标模型连接后重试。"
+        if not isinstance(analysis, Mapping):
+            return "自动重打标返回格式无效；正文与元数据均未修改。"
+
+        latest = await rt.bucket_mgr.get(bucket_id)
+        if not latest:
+            return f"未找到记忆桶: {bucket_id}"
+        if str(latest.get("content") or "") != original_content:
+            return (
+                f"记忆桶 {bucket_id} 在重打标期间正文已被其他请求更新；"
+                "为避免写入过期标签，本次未修改，请重试。"
+            )
+        latest_meta = latest.get("metadata", {})
+        if not isinstance(latest_meta, dict):
+            latest_meta = {}
+
+        raw_domains = analysis.get("domain")
+        if isinstance(raw_domains, str):
+            raw_domains = [raw_domains]
+        domains = []
+        if isinstance(raw_domains, (list, tuple)):
+            domains = list(dict.fromkeys(
+                str(item).strip()[:100]
+                for item in raw_domains
+                if str(item or "").strip()
+            ))[:3]
+        if not domains:
+            current_domains = latest_meta.get("domain") or ["未分类"]
+            if isinstance(current_domains, str):
+                current_domains = [current_domains]
+            domains = [str(item).strip()[:100] for item in current_domains if str(item).strip()][:3]
+            if not domains:
+                domains = ["未分类"]
+
+        raw_tags = analysis.get("tags")
+        if isinstance(raw_tags, str):
+            raw_tags = [raw_tags]
+        model_tags = []
+        if isinstance(raw_tags, (list, tuple)):
+            model_tags = list(dict.fromkeys(
+                str(item).strip()[:80]
+                for item in raw_tags
+                if str(item or "").strip()
+            ))[:10]
+
+        current_valence = _finite_float(latest_meta.get("valence"), 0.5)
+        current_arousal = _finite_float(latest_meta.get("arousal"), 0.3)
+        model_valence = _finite_float(analysis.get("valence"), current_valence)
+        model_arousal = _finite_float(analysis.get("arousal"), current_arousal)
+        if not 0 <= model_valence <= 1:
+            model_valence = current_valence
+        if not 0 <= model_arousal <= 1:
+            model_arousal = current_arousal
+
+        current_importance = _safe_int(latest_meta.get("importance"), 5)
+        model_importance = _safe_int(analysis.get("importance"), current_importance)
+        if not 1 <= model_importance <= 10:
+            model_importance = current_importance if 1 <= current_importance <= 10 else 5
+        guarded_importance = bool(
+            parse_bool(latest_meta.get("pinned"), default=False)
+            or parse_bool(latest_meta.get("protected"), default=False)
+        )
+        if guarded_importance:
+            model_importance = 10
+
+        reclassify_updates = {
+            "domain": domains,
+            "tags": model_tags,
+            "valence": model_valence,
+            "arousal": model_arousal,
+            "importance": model_importance,
+        }
+        success = await rt.bucket_mgr.update(
+            bucket_id,
+            event_actor="llm",
+            **lock_precondition,
+            **reclassify_updates,
+        )
+        if not success:
+            return f"重新打标失败: {bucket_id}"
+        return (
+            f"已重新打标记忆桶 {bucket_id}（正文与标题未修改）: "
+            f"domain={domains}, tags={model_tags}, valence={model_valence}, "
+            f"arousal={model_arousal}, importance={model_importance}"
+        )
     pin_state_changed = (
         pinned in (0, 1) and bool(pinned) != current_pinned
     )
